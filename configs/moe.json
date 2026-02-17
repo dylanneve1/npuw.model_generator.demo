@@ -1,0 +1,6 @@
+{
+   "NPUW_DEVICES": "CPU",
+   "NPUW_DUMP_SUBS": "MIN",
+   "NPUW_DUMP_SUBS_DIR": "moe_dump",
+   "NPUW_UNFOLD_IREQS": "NO"
+}

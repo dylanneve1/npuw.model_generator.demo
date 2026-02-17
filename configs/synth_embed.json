@@ -1,0 +1,7 @@
+{
+    "NPU_USE_NPUW": "YES",
+    "NPUW_ONLINE_PIPELINE": "NONE",
+    "NPUW_DEVICES": "CPU",
+    "NPUW_DUMP_SUBS": "MIN",
+    "NPUW_DUMP_SUBS_DIR": "synth_embed_dump"
+}

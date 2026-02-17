@@ -1,0 +1,6 @@
+{
+   "NPUW_DEVICES": "CPU",
+   "MAX_PROMPT_LEN": 8192,
+   "NPUW_DUMP_SUBS": "MIN",
+   "NPUW_DUMP_SUBS_DIR": "curdump/dump_subs_plain_qwen"
+}

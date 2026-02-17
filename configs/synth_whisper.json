@@ -1,0 +1,8 @@
+{
+   "NPU_USE_NPUW" : "YES",
+   "NPUW_ONLINE_PIPELINE" : "NONE",
+   "NPUW_DEVICES" : "CPU",
+   "NPUW_DUMP_SUBS": "YES",
+   "NPUW_DUMP_IO" : "YES",
+   "NPUW_DUMP_SUBS_DIR": "curdump/dump_subs_synth_whisper"
+}

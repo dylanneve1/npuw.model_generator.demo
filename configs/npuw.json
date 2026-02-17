@@ -1,0 +1,5 @@
+{
+   "NPUW_DEVICES": "CPU",
+   "NPUW_DUMP_SUBS": "MIN",
+   "NPUW_DUMP_SUBS_DIR": "curdump/dump_subs_plain"
+}
