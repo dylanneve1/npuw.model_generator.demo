@@ -2,13 +2,22 @@
 
 Standalone build and test harness for the OpenVINO NPUW synthetic model generator. Generates LLM, VLM, Whisper, and Embedding models for NPUW partitioning and inference testing.
 
+## Prerequisites
+
+- OpenVINO source tree (with NPU plugin) — built with `ENABLE_TESTS=ON`
+- OpenVINO GenAI source tree (for `llm_bench`)
+
 ## Setup
 
 ```bash
+# 1. Build the generator (prompts for OV + GenAI source paths on first run)
 ./build.sh
+
+# 2. Download tokenizer models from Intel Artifactory (smallest per type)
+./download_models.sh
 ```
 
-On first run, you'll be prompted for your OpenVINO source tree path. This is saved to `.ovpath` for subsequent builds. OpenVINO must already be built (`setupvars.sh` is sourced automatically).
+Paths are saved to `.ovpath` and `.genaipath` for subsequent runs. Models are downloaded to `models/` (auto-detects latest Artifactory release).
 
 ## Usage
 
@@ -33,18 +42,24 @@ Options:
 ## Structure
 
 ```
-build.sh                    # Build script (manages .ovpath, runs cmake)
+build.sh                    # Build generator (manages .ovpath/.genaipath)
+download_models.sh          # Download tokenizer models from Artifactory
 src/
   demo_model_generator.cpp  # Generator CLI source
   CMakeLists.txt            # Standalone cmake (links model_builder from OV source)
+tools/
+  whisper_genai.py          # Whisper inference test script
 configs/                    # NPUW/HFA/Pyramid/Whisper/Embedding JSON configs
 test_model_builder.sh       # Comprehensive test suite
 test_whisper_models_npu.sh  # Whisper NPU quick test
 ```
 
-## Requirements
+## Downloaded models
 
-- OpenVINO source tree (with NPU plugin) — built with `ENABLE_TESTS=ON`
-- OpenVINO GenAI (`llm_bench`) and NPUW whisper sample in the parent workspace
-- Tokenizer directories (Llama, Qwen, Whisper, Contriever) in the parent workspace
-- Python venv with OpenVINO + GenAI packages (`test-env/` in parent workspace)
+| Type | Model | Size |
+|------|-------|------|
+| LLM | MiniCPM4-0.5B (int4) | ~300MB |
+| VLM | Qwen2.5-VL-3B-Instruct (int4) | ~2GB |
+| Whisper | whisper-tiny (fp16) | ~150MB |
+| Embedding (decoder) | Qwen3-Embedding-0.6B (int4) | ~400MB |
+| Embedding (encoder) | Facebook Contriever (int4) | ~100MB |
