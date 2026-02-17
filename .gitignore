@@ -1,2 +1,5 @@
 .ovpath
+.genaipath
 build/
+models/
+venv/

@@ -1,40 +1,51 @@
 #!/bin/bash
 # Build npuw_model_generator_demo from OpenVINO source.
-# On first run, prompts for the OpenVINO source path and saves it to .ovpath.
+# On first run, prompts for OpenVINO and GenAI source paths.
 
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-OVPATH_FILE="$HERE/.ovpath"
 BUILD_DIR="$HERE/build"
 SRC_DIR="$HERE/src"
 
-# --- Resolve OpenVINO source path ---
-if [[ -f "$OVPATH_FILE" ]]; then
-    OV_SRC="$(cat "$OVPATH_FILE")"
-    if [[ ! -d "$OV_SRC/src/plugins/intel_npu" ]]; then
-        echo "ERROR: Saved path '$OV_SRC' no longer valid (missing intel_npu plugin dir)"
-        echo "Delete .ovpath and re-run, or edit it manually."
-        exit 1
-    fi
-else
-    echo "OpenVINO source path not configured."
-    read -rp "Enter path to OpenVINO source tree: " OV_SRC
-    OV_SRC="${OV_SRC/#\~/$HOME}"
-    OV_SRC="$(realpath "$OV_SRC")"
-    if [[ ! -d "$OV_SRC/src/plugins/intel_npu" ]]; then
-        echo "ERROR: '$OV_SRC' does not look like an OpenVINO source tree"
-        exit 1
-    fi
-    echo "$OV_SRC" > "$OVPATH_FILE"
-    echo "Saved to .ovpath"
-fi
+# --- Helper: resolve and save a path ---
+resolve_path() {
+    local label="$1" file="$2" check_dir="$3"
 
-# --- Source setupvars.sh (sets up OpenVINO_DIR for find_package) ---
+    if [[ -f "$file" ]]; then
+        local saved
+        saved="$(cat "$file")"
+        if [[ ! -d "$saved/$check_dir" ]]; then
+            echo "ERROR: Saved $label path '$saved' no longer valid (missing $check_dir)"
+            echo "Delete $(basename "$file") and re-run."
+            exit 1
+        fi
+        echo "$saved"
+        return
+    fi
+
+    echo "$label source path not configured." >&2
+    read -rp "Enter path to $label source tree: " input
+    input="${input/#\~/$HOME}"
+    input="$(realpath "$input")"
+    if [[ ! -d "$input/$check_dir" ]]; then
+        echo "ERROR: '$input' does not look like a $label source tree" >&2
+        exit 1
+    fi
+    echo "$input" > "$file"
+    echo "Saved to $(basename "$file")" >&2
+    echo "$input"
+}
+
+# --- Resolve paths ---
+OV_SRC=$(resolve_path "OpenVINO" "$HERE/.ovpath" "src/plugins/intel_npu")
+GENAI_SRC=$(resolve_path "OpenVINO GenAI" "$HERE/.genaipath" "tools/llm_bench")
+
+# --- Source setupvars.sh ---
 SETUPVARS="$OV_SRC/build-ninja/install/setupvars.sh"
 if [[ ! -f "$SETUPVARS" ]]; then
     echo "ERROR: setupvars.sh not found at $SETUPVARS"
-    echo "Build OpenVINO first, or set OpenVINO_DIR manually."
+    echo "Build OpenVINO first."
     exit 1
 fi
 set +u
@@ -50,3 +61,5 @@ cmake --build "$BUILD_DIR" -j"$(nproc)"
 
 echo ""
 echo "Built: $BUILD_DIR/npuw_model_generator_demo"
+echo "OV source: $OV_SRC"
+echo "GenAI source: $GENAI_SRC"

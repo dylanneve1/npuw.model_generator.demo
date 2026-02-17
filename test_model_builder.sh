@@ -14,28 +14,29 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-WORKSPACE="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-# Read OpenVINO source path from .ovpath (created by build.sh)
-if [[ -f "$SCRIPT_DIR/.ovpath" ]]; then
-    OV_SRC="$(cat "$SCRIPT_DIR/.ovpath")"
-else
-    echo "ERROR: .ovpath not found. Run ./build.sh first."
-    exit 1
-fi
+# Read saved paths (created by build.sh)
+for pathfile in .ovpath .genaipath; do
+    if [[ ! -f "$SCRIPT_DIR/$pathfile" ]]; then
+        echo "ERROR: $pathfile not found. Run ./build.sh first."
+        exit 1
+    fi
+done
+OV_SRC="$(cat "$SCRIPT_DIR/.ovpath")"
+GENAI_SRC="$(cat "$SCRIPT_DIR/.genaipath")"
 
 GENERATOR="$SCRIPT_DIR/build/npuw_model_generator_demo"
-LLM_BENCH="$WORKSPACE/openvino.genai/tools/llm_bench/benchmark.py"
-WHISPER_GENAI="$WORKSPACE/applications.ai.vpu-accelerators.npuw/samples/whisper/whisper_genai.py"
-TOKENIZER_DIR="$WORKSPACE/Meta-Llama-3.1-8B-Instruct"
-QWEN_TOKENIZER_DIR="$WORKSPACE/Qwen2.5-VL-3B-Instruct"
-QWEN3_EMB_TOKENIZER_DIR="$WORKSPACE/Qwen3-Embedding-0.6B"
-CONTRIEVER_TOKENIZER_DIR="$WORKSPACE/Facebook_Contriever_int4_sym_group-1"
-WHISPER_TOKENIZER_DIR="$WORKSPACE/whisper-tiny"
-TEST_AUDIO="$WORKSPACE/test_audio.wav"
+LLM_BENCH="$GENAI_SRC/tools/llm_bench/benchmark.py"
+WHISPER_GENAI="$SCRIPT_DIR/tools/whisper_genai.py"
+TOKENIZER_DIR="$SCRIPT_DIR/models/llm"
+QWEN_TOKENIZER_DIR="$SCRIPT_DIR/models/vlm"
+QWEN3_EMB_TOKENIZER_DIR="$SCRIPT_DIR/models/embedding-decoder"
+CONTRIEVER_TOKENIZER_DIR="$SCRIPT_DIR/models/embedding-encoder"
+WHISPER_TOKENIZER_DIR="$SCRIPT_DIR/models/whisper"
+TEST_AUDIO="$SCRIPT_DIR/models/test_audio.wav"
 CONFIGS_DIR="$SCRIPT_DIR/configs"
 OUTPUT_DIR="/tmp/npuw_model_builder_test"
-VENV="$WORKSPACE/test-env/bin/activate"
+VENV="$SCRIPT_DIR/venv/bin/activate"
 SETUPVARS="$OV_SRC/build-ninja/install/setupvars.sh"
 EMB_TEST_SCRIPT="$OUTPUT_DIR/_test_embedding.py"
 EMB_DUMP_SCRIPT="$OUTPUT_DIR/_dump_embedding.py"
