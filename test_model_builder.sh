@@ -94,6 +94,9 @@ if [[ ! -f "$CONFIGS_DIR/npuw.json" ]]; then
     exit 1
 fi
 
+# --- Source setupvars (needed for generator binary to find libopenvino) ---
+set +u; source "$SETUPVARS"; set -u
+
 # --- Test configurations ---
 # Format: "NAME|EXTRA_GENERATOR_ARGS"
 # Each config tests a specific builder option or combination.
