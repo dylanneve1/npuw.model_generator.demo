@@ -8,6 +8,12 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MODELS_DIR="$HERE/models"
 BASE_URL="https://af01p-ir.devtools.intel.com/artifactory/ir-public-models-ir-local/ov-genai-models/releases"
 VERSION_FILE="$MODELS_DIR/.release_version"
+VENV="$HERE/venv/bin/activate"
+
+# Activate venv (needed for optimum-cli export of embedding models)
+if [[ -f "$VENV" ]]; then
+    set +u; source "$VENV"; set -u
+fi
 
 # --- Find latest release ---
 echo "Checking latest release..."
@@ -32,19 +38,23 @@ fi
 
 mkdir -p "$MODELS_DIR"
 
-# --- Smallest model for each type ---
-declare -A MODELS=(
+# --- Models from Artifactory tarballs ---
+declare -A ARTIFACTORY_MODELS=(
     ["LLM/MiniCPM4-0.5B_int4_sym_group-1_dyn_stateful.tgz"]="llm"
     ["VLM/Qwen2.5-VL-3B-Instruct_int4_sym_group128_dyn_stateful.tgz"]="vlm"
     ["whisper/whisper-tiny_fp16_dyn_stateful.tgz"]="whisper"
-    ["RAG/Qwen3-Embedding-0.6B_int4_sym_group-1_dyn_stateful.tgz"]="embedding-decoder"
-    ["RAG/Facebook_Contriever_int4_sym_group-1.tgz"]="embedding-encoder"
+)
+
+# --- Embedding models exported via optimum-cli (Artifactory RAG tarballs lack model files) ---
+declare -A OPTIMUM_MODELS=(
+    ["Qwen/Qwen3-Embedding-0.6B"]="embedding-decoder"
+    ["facebook/contriever"]="embedding-encoder"
 )
 
 FAIL=0
 
-for path in "${!MODELS[@]}"; do
-    label="${MODELS[$path]}"
+for path in "${!ARTIFACTORY_MODELS[@]}"; do
+    label="${ARTIFACTORY_MODELS[$path]}"
     file="${path##*/}"
     url="$BASE_URL/$LATEST/$path"
     dest="$MODELS_DIR/$label"
@@ -60,6 +70,27 @@ for path in "${!MODELS[@]}"; do
     else
         echo "FAILED"
         rm -f "$tmp"
+        FAIL=1
+    fi
+done
+
+# --- Export embedding models via optimum-cli ---
+for hf_id in "${!OPTIMUM_MODELS[@]}"; do
+    label="${OPTIMUM_MODELS[$hf_id]}"
+    dest="$MODELS_DIR/$label"
+
+    printf "  %-20s %s ... " "$label" "$hf_id"
+
+    if [[ -d "$dest" ]] && ls "$dest"/openvino_model.xml &>/dev/null; then
+        echo "SKIP (already exists)"
+        continue
+    fi
+
+    mkdir -p "$dest"
+    if optimum-cli export openvino -m "$hf_id" --task feature-extraction "$dest" 2>/dev/null; then
+        echo "OK ($(du -sh "$dest" | cut -f1))"
+    else
+        echo "FAILED"
         FAIL=1
     fi
 done
