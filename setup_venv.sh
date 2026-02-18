@@ -60,8 +60,8 @@ else
     pip install openvino-genai -q
 fi
 
-# Install remaining deps
-pip install openvino-tokenizers numpy librosa -q
+# Install remaining deps from requirements.txt
+pip install -r "$HERE/requirements.txt" -q
 
 echo ""
 echo "Venv created: $VENV_DIR"

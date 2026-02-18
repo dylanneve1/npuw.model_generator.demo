@@ -524,20 +524,10 @@ for config_entry in "${CONFIGS[@]}"; do
             else
                 BENCH_CMD="bash -c 'source $VENV && source $SETUPVARS && python $WHISPER_GENAI $MODEL_DIR $TEST_AUDIO NPU -c $CONFIGS_DIR/synth_whisper.json'"
             fi
-        elif [[ $IS_EMB_DECODER -eq 1 ]]; then
-            # Decoder embedding: llm_bench text_embed on both CPU and NPU
-            if [[ "$BACKEND_NAME" == "CPU" ]]; then
-                BENCH_CMD="bash -c 'source $VENV && source $SETUPVARS && python $LLM_BENCH -m $MODEL_DIR --task text_embed -d CPU -n 3'"
-            else
-                BENCH_CMD="bash -c 'source $VENV && source $SETUPVARS && python $LLM_BENCH -m $MODEL_DIR --task text_embed $BACKEND_ARGS -n 3'"
-            fi
-        elif [[ $IS_EMB_ENCODER -eq 1 ]]; then
-            # Encoder embedding: CPU via llm_bench, NPU via custom script (needs static shapes)
-            if [[ "$BACKEND_NAME" == "CPU" ]]; then
-                BENCH_CMD="bash -c 'source $VENV && source $SETUPVARS && python $LLM_BENCH -m $MODEL_DIR --task text_embed -d CPU -n 3'"
-            else
-                BENCH_CMD="bash -c 'source $VENV && source $SETUPVARS && python3 $EMB_TEST_SCRIPT $MODEL_DIR NPU'"
-            fi
+        elif [[ $IS_EMB_DECODER -eq 1 || $IS_EMB_ENCODER -eq 1 ]]; then
+            # Embedding models: use bare-OV test script (no torch dependency)
+            EMB_DEVICE="${BACKEND_NAME%%_*}"  # "NPU_npuw" -> "NPU", "CPU" -> "CPU"
+            BENCH_CMD="bash -c 'source $VENV && source $SETUPVARS && python3 $EMB_TEST_SCRIPT $MODEL_DIR $EMB_DEVICE'"
         else
             # LLM/VLM: use llm_bench
             if [[ "$BACKEND_NAME" == "CPU" ]]; then
@@ -556,13 +546,8 @@ for config_entry in "${CONFIGS[@]}"; do
                 if grep -q "timestamps:" "$TEST_LOG"; then
                     TEST_PASSED=1
                 fi
-            elif [[ $IS_EMB_DECODER -eq 1 ]]; then
-                if grep -q "First iteration latency:" "$TEST_LOG"; then
-                    TEST_PASSED=1
-                fi
-            elif [[ $IS_EMB_ENCODER -eq 1 ]]; then
-                # CPU uses llm_bench (check for iteration latency), NPU uses custom script (check Inference OK)
-                if grep -q "First iteration latency:" "$TEST_LOG" || grep -q "Inference OK:" "$TEST_LOG"; then
+            elif [[ $IS_EMB_DECODER -eq 1 || $IS_EMB_ENCODER -eq 1 ]]; then
+                if grep -q "Inference OK:" "$TEST_LOG"; then
                     TEST_PASSED=1
                 fi
             else
@@ -575,16 +560,8 @@ for config_entry in "${CONFIGS[@]}"; do
         if [[ $TEST_PASSED -eq 1 ]]; then
             if [[ $IS_WHISPER -eq 1 ]]; then
                 INFO="whisper ok"
-            elif [[ $IS_EMB_DECODER -eq 1 ]]; then
-                LATENCY=$(grep "1st iteration latency:" "$TEST_LOG" | head -1 | sed 's/.*1st iteration latency: \([0-9.]*\).*/\1/')
-                INFO="1st iter: ${LATENCY}ms"
-            elif [[ $IS_EMB_ENCODER -eq 1 ]]; then
-                if grep -q "1st iteration latency:" "$TEST_LOG"; then
-                    LATENCY=$(grep "1st iteration latency:" "$TEST_LOG" | head -1 | sed 's/.*1st iteration latency: \([0-9.]*\).*/\1/')
-                    INFO="1st iter: ${LATENCY}ms"
-                else
-                    INFO=$(grep "Inference OK:" "$TEST_LOG" | head -1 | sed 's/Inference OK: //')
-                fi
+            elif [[ $IS_EMB_DECODER -eq 1 || $IS_EMB_ENCODER -eq 1 ]]; then
+                INFO=$(grep "Inference OK:" "$TEST_LOG" | head -1 | sed 's/Inference OK: //')
             else
                 LATENCY=$(grep "First token latency:" "$TEST_LOG" | head -1 | sed 's/.*First token latency: \([0-9.]*\).*/\1/')
                 INFO="first token: ${LATENCY}ms"
@@ -731,9 +708,7 @@ if [[ $DUMP -eq 1 ]]; then
             # Build dump command
             if [[ $IS_WHISPER -eq 1 ]]; then
                 DUMP_CMD="bash -c 'source $VENV && source $SETUPVARS && python $WHISPER_GENAI $MODEL_DIR $TEST_AUDIO NPU -c $DUMP_CONFIG'"
-            elif [[ $IS_EMB_DECODER -eq 1 ]]; then
-                DUMP_CMD="bash -c 'source $VENV && source $SETUPVARS && python $LLM_BENCH -m $MODEL_DIR --task text_embed -d NPU -n 1 -lc $DUMP_CONFIG'"
-            elif [[ $IS_EMB_ENCODER -eq 1 ]]; then
+            elif [[ $IS_EMB_DECODER -eq 1 || $IS_EMB_ENCODER -eq 1 ]]; then
                 DUMP_CMD="bash -c 'source $VENV && source $SETUPVARS && python3 $EMB_DUMP_SCRIPT $MODEL_DIR $DUMP_CONFIG'"
             else
                 DUMP_CMD="bash -c 'source $VENV && source $SETUPVARS && python $LLM_BENCH --genai -m $MODEL_DIR -d NPU -lc $DUMP_CONFIG'"

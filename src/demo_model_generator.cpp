@@ -511,6 +511,10 @@ int main(int argc, char* argv[]) {
             else if (weight_type_str == "int8")  wf = INT8Weight{};
             else if (weight_type_str == "int4")  wf = INT4Weight{};
             bert_config.weight = wf;
+            bert_config.norm = LayerNorm(bert_config.hidden_size, config.precision);
+            FloatWeight bias_wf(config.precision);
+            bert_config.ffn = GELUFn(bert_config.hidden_size, bert_config.intermediate_size,
+                                      config.precision, wf, bias_wf);
 
             std::cout << "Generating BERT encoder embedding model:\n";
             std::cout << "  layers:            " << bert_config.num_layers << "\n";
