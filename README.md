@@ -13,11 +13,14 @@ Standalone build and test harness for the OpenVINO NPUW synthetic model generato
 # 1. Build the generator (prompts for OV + GenAI source paths on first run)
 ./build.sh
 
-# 2. Download tokenizer models from Intel Artifactory (smallest per type)
+# 2. Create Python venv with openvino, openvino-genai, librosa, numpy
+./setup_venv.sh
+
+# 3. Download tokenizer models from Intel Artifactory (smallest per type)
 ./download_models.sh
 ```
 
-Paths are saved to `.ovpath` and `.genaipath` for subsequent runs. Models are downloaded to `models/` (auto-detects latest Artifactory release).
+Paths are saved to `.ovpath` and `.genaipath` for subsequent runs. Models are downloaded to `models/`, venv is created in `venv/`.
 
 ## Usage
 
@@ -43,6 +46,7 @@ Options:
 
 ```
 build.sh                    # Build generator (manages .ovpath/.genaipath)
+setup_venv.sh               # Create Python venv with all dependencies
 download_models.sh          # Download tokenizer models from Artifactory
 src/
   demo_model_generator.cpp  # Generator CLI source

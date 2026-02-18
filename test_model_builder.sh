@@ -69,7 +69,7 @@ done
 for f in "$GENERATOR" "$LLM_BENCH" "$VENV" "$SETUPVARS"; do
     if [[ ! -f "$f" ]]; then
         echo "ERROR: Required file not found: $f"
-        echo "Did you build first? cd openvino-build-env && ./linux/ninja-build.sh"
+        echo "Run: ./build.sh && ./setup_venv.sh && ./download_models.sh"
         exit 1
     fi
 done
