@@ -3,3 +3,8 @@
 build/
 models/
 venv/
+
+# Dump outputs
+curdump/
+synth_embed_dump/
+synthetic_whisper_*
