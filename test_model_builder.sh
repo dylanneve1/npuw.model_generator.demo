@@ -107,7 +107,13 @@ CONFIGS=(
     "int8_weights|--weight-type int8"
     "int4_weights|--weight-type int4"
     "int4_group128|--weight-type int4 --group-size 128"
-    "int4_group32|--weight-type int4 --group-size 32"
+    "int4_group64|--weight-type int4 --group-size 64"
+    "int4_symm_no_zp_f32|--weight-type int4 --quant-pattern symm_no_zp_f32"
+    "int4_group128_symm_no_zp_f32|--weight-type int4 --group-size 128 --quant-pattern symm_no_zp_f32"
+    "int4_symm_zp|--weight-type int4 --quant-pattern symm_zp"
+    "int4_group128_symm_zp|--weight-type int4 --group-size 128 --quant-pattern symm_zp"
+    "int4_group128_gptq|--weight-type int4 --group-size 128 --quant-pattern gptq"
+    "int4_group128_asymm_zp|--weight-type int4 --group-size 128 --quant-pattern asymm_zp"
 
     # Norm types
     "layer_norm|--norm-type layer"
@@ -198,6 +204,28 @@ is_known_limitation() {
     return 1
 }
 
+# Returns 0 if this config/backend combo is a known dump limitation (XFAIL).
+# Outputs a reason string on stdout when returning 0.
+is_known_dump_limitation() {
+    local config_name="$1"
+    local config_args="$2"
+    local dump_backend="$3"
+
+    # DCOFF AVX2 unpack requires the weight tensor's last dimension % 64 == 0.
+    # Group-quantized weights are folded to 3D [N, num_groups, group_size] by
+    # constant folding, so group_size < 64 triggers NPUW_ASSERT failure.
+    if [[ "$config_args" == *"--group-size"* ]]; then
+        local gs
+        gs=$(echo "$config_args" | grep -oP '(?<=--group-size )\d+')
+        if [[ -n "$gs" ]] && [[ "$gs" -lt 64 ]]; then
+            echo "DCOFF AVX2 unpack requires group_size >= 64 (got $gs)"
+            return 0
+        fi
+    fi
+
+    return 1
+}
+
 # --- Tracking ---
 TOTAL=0
 PASSED=0
@@ -213,7 +241,9 @@ DUMP_OK=0
 DUMP_FAIL=0
 DUMP_SKIP=0
 DUMP_WARN=0
+DUMP_XFAIL=0
 declare -a DUMP_WARNINGS=()
+declare -a DUMP_XFAILS=()
 
 # Colors
 RED='\033[0;31m'
@@ -732,6 +762,14 @@ if [[ $DUMP -eq 1 ]]; then
                 DUMP_CMD="bash -c 'source $VENV && source $SETUPVARS && python $LLM_BENCH --genai -m $MODEL_DIR -d NPU -lc $DUMP_CONFIG'"
             fi
 
+            # Check for known dump limitations
+            DUMP_XFAIL_REASON=""
+            if DUMP_XFAIL_REASON=$(is_known_dump_limitation "$CONFIG_NAME" "$CONFIG_ARGS" "$dump_backend"); then
+                DUMP_XFAIL_EXPECTED=1
+            else
+                DUMP_XFAIL_EXPECTED=0
+            fi
+
             printf "  [%-9s] " "$dump_backend"
 
             if eval "$DUMP_CMD" > "$DUMP_LOG" 2>&1; then
@@ -740,7 +778,11 @@ if [[ $DUMP -eq 1 ]]; then
                 XML_COUNT=$(find "$DUMP_SUBDIR" -name "*.xml" 2>/dev/null | wc -l)
 
                 if [[ $SG_COUNT -gt 0 || $XML_COUNT -gt 0 ]]; then
-                    echo -e "${GREEN}OK${NC} ($SG_COUNT sg, $XML_COUNT xml)"
+                    if [[ $DUMP_XFAIL_EXPECTED -eq 1 ]]; then
+                        echo -e "${MAGENTA}XPASS${NC} ($SG_COUNT sg, $XML_COUNT xml) — expected fail: $DUMP_XFAIL_REASON"
+                    else
+                        echo -e "${GREEN}OK${NC} ($SG_COUNT sg, $XML_COUNT xml)"
+                    fi
                     DUMP_OK=$((DUMP_OK + 1))
 
                     # Check for anomalous subgraph count
@@ -764,9 +806,15 @@ if [[ $DUMP -eq 1 ]]; then
                     DUMP_FAIL=$((DUMP_FAIL + 1))
                 fi
             else
-                echo -e "${RED}FAIL${NC}"
-                DUMP_FAIL=$((DUMP_FAIL + 1))
-                grep -E "ERROR|Exception|error|Traceback" "$DUMP_LOG" | tail -3 | sed 's/^/    /'
+                if [[ $DUMP_XFAIL_EXPECTED -eq 1 ]]; then
+                    echo -e "${YELLOW}XFAIL${NC} ($DUMP_XFAIL_REASON)"
+                    DUMP_XFAIL=$((DUMP_XFAIL + 1))
+                    DUMP_XFAILS+=("${CONFIG_NAME}/${dump_backend}: $DUMP_XFAIL_REASON")
+                else
+                    echo -e "${RED}FAIL${NC}"
+                    DUMP_FAIL=$((DUMP_FAIL + 1))
+                    grep -E "ERROR|Exception|error|Traceback" "$DUMP_LOG" | tail -3 | sed 's/^/    /'
+                fi
             fi
 
             rm -f "$DUMP_CONFIG"
@@ -807,8 +855,15 @@ fi
 
 if [[ $DUMP -eq 1 ]]; then
     echo ""
-    echo -e "Dumps:   ${GREEN}OK=$DUMP_OK${NC}  ${RED}FAIL=$DUMP_FAIL${NC}  ${YELLOW}SKIP=$DUMP_SKIP${NC}  ${YELLOW}WARN=$DUMP_WARN${NC}"
+    echo -e "Dumps:   ${GREEN}OK=$DUMP_OK${NC}  ${RED}FAIL=$DUMP_FAIL${NC}  ${YELLOW}XFAIL=$DUMP_XFAIL${NC}  ${YELLOW}SKIP=$DUMP_SKIP${NC}  ${YELLOW}WARN=$DUMP_WARN${NC}"
     echo -e "Output:  $DUMP_DIR/"
+    if [[ $DUMP_XFAIL -gt 0 ]]; then
+        echo ""
+        echo -e "${YELLOW}Known dump limitations (XFAIL):${NC}"
+        for f in "${DUMP_XFAILS[@]}"; do
+            echo -e "  ${YELLOW}-${NC} $f"
+        done
+    fi
     if [[ $DUMP_WARN -gt 0 ]]; then
         echo ""
         echo -e "${YELLOW}Anomalous subgraph counts:${NC}"
@@ -831,7 +886,7 @@ else
     echo ""
     echo -e "${GREEN}All tests passed!${NC} ($XFAILED known limitations)"
     if [[ $DUMP -eq 1 ]] && [[ $DUMP_FAIL -gt 0 ]]; then
-        echo -e "${YELLOW}Warning: some dumps failed (see above)${NC}"
+        echo -e "${RED}Warning: some dumps failed unexpectedly (see above)${NC}"
     fi
     if [[ $DUMP -eq 1 ]] && [[ $DUMP_WARN -gt 0 ]]; then
         echo -e "${YELLOW}Warning: anomalous subgraph counts detected (see above)${NC}"

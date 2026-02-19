@@ -58,6 +58,10 @@ static void print_help(const char *prog) {
                "int4 (default: fp32)\n";
   std::cout << "  --group-size <N>        Group size for int4 group "
                "quantization, 0=per-channel (default: 0)\n";
+  std::cout << "  --quant-pattern <type>  Decompression pattern (default: "
+               "symm_no_zp)\n";
+  std::cout << "                          symm_no_zp, symm_no_zp_f32, "
+               "symm_zp, gptq, asymm_zp\n";
   std::cout << "  --inputs-embeds         Use inputs_embeds instead of "
                "input_ids (VLM-style)\n";
   std::cout << "  --position-ids <type>   Position IDs shape: 2d, 3d, none "
@@ -284,6 +288,18 @@ static void write_whisper_configs(const fs::path &dir,
   }
 }
 
+static DCOffPattern parse_quant_pattern(const std::string &s) {
+  if (s == "symm_no_zp_f32")
+    return DCOffPattern::SYMM_NO_ZP_F32;
+  if (s == "symm_zp")
+    return DCOffPattern::SYMM_ZP;
+  if (s == "gptq")
+    return DCOffPattern::GPTQ;
+  if (s == "asymm_zp")
+    return DCOffPattern::ASYMM_ZP;
+  return DCOffPattern::SYMM_NO_ZP;
+}
+
 static bool parse_size_t(const char *str, size_t &out) {
   try {
     out = std::stoull(str);
@@ -329,6 +345,7 @@ int main(int argc, char *argv[]) {
   std::string weight_type_str = "fp32";
   std::string position_ids_str = "2d";
   std::string arch_str = "decoder";
+  std::string quant_pattern_str = "symm_no_zp";
   size_t group_size = 0;
 
   for (int i = 1; i < argc; ++i) {
@@ -426,6 +443,17 @@ int main(int argc, char *argv[]) {
           position_ids_str != "none") {
         std::cerr << "Error: unknown --position-ids '" << position_ids_str
                   << "' (expected: 2d, 3d, none)\n";
+        return 1;
+      }
+    } else if (arg == "--quant-pattern" && i + 1 < argc) {
+      quant_pattern_str = argv[++i];
+      if (quant_pattern_str != "symm_no_zp" &&
+          quant_pattern_str != "symm_no_zp_f32" &&
+          quant_pattern_str != "symm_zp" && quant_pattern_str != "gptq" &&
+          quant_pattern_str != "asymm_zp") {
+        std::cerr << "Error: unknown --quant-pattern '" << quant_pattern_str
+                  << "' (expected: symm_no_zp, symm_no_zp_f32, symm_zp, gptq, "
+                     "asymm_zp)\n";
         return 1;
       }
     } else if (arg == "--arch" && i + 1 < argc) {
@@ -583,15 +611,21 @@ int main(int argc, char *argv[]) {
       enc_config.use_kv_cache = false;
       enc_config.lm_head_weight = {};
 
+      auto enc_qp = parse_quant_pattern(quant_pattern_str);
+      const bool enc_needs_u4 =
+          (enc_qp == DCOffPattern::SYMM_ZP || enc_qp == DCOffPattern::GPTQ ||
+           enc_qp == DCOffPattern::ASYMM_ZP);
       WeightFn wf;
       if (weight_type_str == "fp32")
         wf = FP32Weight{};
       else if (weight_type_str == "fp16")
         wf = FP16Weight{};
       else if (weight_type_str == "int8")
-        wf = INT8Weight{};
-      else if (weight_type_str == "int4")
-        wf = INT4Weight{};
+        wf = CompressedWeight{ov::element::i8, 0, enc_qp};
+      else if (weight_type_str == "int4") {
+        auto st = enc_needs_u4 ? ov::element::u4 : ov::element::i4;
+        wf = CompressedWeight{st, group_size, enc_qp};
+      }
       enc_config.weight = wf;
       enc_config.use_token_type_embedding = true;
       enc_config.pre_norm = false;
@@ -629,18 +663,20 @@ int main(int argc, char *argv[]) {
       config.internal_position_ids = true;
       config.qk_norm = RMSNorm(config.head_dim, config.precision);
 
+      auto emb_qp = parse_quant_pattern(quant_pattern_str);
+      const bool emb_needs_u4 =
+          (emb_qp == DCOffPattern::SYMM_ZP || emb_qp == DCOffPattern::GPTQ ||
+           emb_qp == DCOffPattern::ASYMM_ZP);
       WeightFn weight_fn;
       if (weight_type_str == "fp32")
         weight_fn = FP32Weight{};
       else if (weight_type_str == "fp16")
         weight_fn = FP16Weight{};
       else if (weight_type_str == "int8")
-        weight_fn = INT8Weight{};
+        weight_fn = CompressedWeight{ov::element::i8, 0, emb_qp};
       else if (weight_type_str == "int4") {
-        if (group_size > 0)
-          weight_fn = INT4GroupWeight{group_size};
-        else
-          weight_fn = INT4Weight{};
+        auto st = emb_needs_u4 ? ov::element::u4 : ov::element::i4;
+        weight_fn = CompressedWeight{st, group_size, emb_qp};
       }
       config.weight = weight_fn;
 
@@ -699,19 +735,27 @@ int main(int argc, char *argv[]) {
         << "Error: --group-size is only supported with --weight-type int4\n";
     return 1;
   }
+  if (group_size > 0 && (group_size < 64 || group_size % 64 != 0)) {
+    std::cerr << "Error: --group-size must be >= 64 and a multiple of 64 "
+                 "(DCOFF AVX2 unpack constraint), got "
+              << group_size << "\n";
+    return 1;
+  }
 
+  auto qp = parse_quant_pattern(quant_pattern_str);
+  const bool needs_u4 =
+      (qp == DCOffPattern::SYMM_ZP || qp == DCOffPattern::GPTQ ||
+       qp == DCOffPattern::ASYMM_ZP);
   WeightFn weight_fn;
   if (weight_type_str == "fp32")
     weight_fn = FP32Weight{};
   else if (weight_type_str == "fp16")
     weight_fn = FP16Weight{};
   else if (weight_type_str == "int8")
-    weight_fn = INT8Weight{};
+    weight_fn = CompressedWeight{ov::element::i8, 0, qp};
   else if (weight_type_str == "int4") {
-    if (group_size > 0)
-      weight_fn = INT4GroupWeight{group_size};
-    else
-      weight_fn = INT4Weight{};
+    auto st = needs_u4 ? ov::element::u4 : ov::element::i4;
+    weight_fn = CompressedWeight{st, group_size, qp};
   }
   config.weight = weight_fn;
 
@@ -762,6 +806,8 @@ int main(int argc, char *argv[]) {
   std::cout << "  weight:            " << weight_type_str;
   if (group_size > 0)
     std::cout << " (group_size=" << group_size << ")";
+  if (weight_type_str == "int4" || weight_type_str == "int8")
+    std::cout << " [" << quant_pattern_str << "]";
   std::cout << "\n";
   std::cout << "  position_ids:      " << position_ids_str << "\n";
   std::cout << "  inputs_embeds:     "
