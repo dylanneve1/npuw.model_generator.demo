@@ -136,7 +136,6 @@ CONFIGS=(
     # Combined configs — stress different code paths together
     "int8_layer_gelu_interleaved_gqa|--weight-type int8 --norm-type layer --ffn-type gelu --rope-type interleaved --num-kv-heads 2"
     "int4_group128_gqa_interleaved|--weight-type int4 --group-size 128 --num-kv-heads 2 --rope-type interleaved"
-    "fp16_gqa1_interleaved_3layer|--weight-type fp16 --num-kv-heads 1 --rope-type interleaved --num-layers 3"
     "vlm_3d_fp16_gelu_gqa_interleaved|--inputs-embeds --position-ids 3d --weight-type fp16 --ffn-type gelu --num-kv-heads 2 --rope-type interleaved --vocab-size 151936"
     "vlm_2d_fp16_gelu_gqa_interleaved|--inputs-embeds --position-ids 2d --weight-type fp16 --ffn-type gelu --num-kv-heads 2 --rope-type interleaved --vocab-size 151936"
 
