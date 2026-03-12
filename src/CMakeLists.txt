@@ -26,7 +26,7 @@ if(NOT OPENVINO_SOURCE_DIR)
     endif()
 endif()
 
-set(MODEL_BUILDER_DIR "${OPENVINO_SOURCE_DIR}/src/plugins/intel_npu/tests/unit/npuw/model_builder")
+set(MODEL_BUILDER_DIR "${OPENVINO_SOURCE_DIR}/src/plugins/intel_npu/tests/functional/behavior/npuw/test_engine/models")
 
 if(NOT EXISTS "${MODEL_BUILDER_DIR}/model_builder.cpp")
     message(FATAL_ERROR

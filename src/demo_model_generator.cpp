@@ -67,7 +67,16 @@ static void print_help(const char *prog) {
   std::cout << "  --position-ids <type>   Position IDs shape: 2d, 3d, none "
                "(default: 2d)\n";
   std::cout
-      << "  --no-kv-cache           Disable KV cache (stateless model)\n\n";
+      << "  --no-kv-cache           Disable KV cache (stateless model)\n";
+  std::cout
+      << "  --stateless             Stateless KV cache (Parameter/Result, no "
+         "ReadValue/Assign)\n";
+  std::cout
+      << "  --batch-size <N>        Static batch dimension, 0=dynamic "
+         "(default: 0)\n";
+  std::cout
+      << "  --seq-len <N>           Static sequence length, 0=dynamic "
+         "(default: 0)\n\n";
   std::cout << "Whisper options (defaults match whisper-tiny):\n";
   std::cout << "  --d-model <N>           Model dimension (default: 384)\n";
   std::cout << "  --encoder-layers <N>    Encoder layers (default: 4)\n";
@@ -467,6 +476,18 @@ int main(int argc, char *argv[]) {
       config.use_inputs_embeds = true;
     } else if (arg == "--no-kv-cache") {
       config.use_kv_cache = false;
+    } else if (arg == "--stateless") {
+      config.stateful = false;
+    } else if (arg == "--batch-size" && i + 1 < argc) {
+      if (!parse_size_t(argv[++i], config.batch_size)) {
+        std::cerr << "Error: invalid value for --batch-size\n";
+        return 1;
+      }
+    } else if (arg == "--seq-len" && i + 1 < argc) {
+      if (!parse_size_t(argv[++i], config.seq_len)) {
+        std::cerr << "Error: invalid value for --seq-len\n";
+        return 1;
+      }
     } else if (arg == "--d-model" && i + 1 < argc) {
       if (!parse_size_t(argv[++i], whisper_cfg.hidden_size)) {
         std::cerr << "Error: invalid value for --d-model\n";
@@ -814,6 +835,13 @@ int main(int argc, char *argv[]) {
             << (config.use_inputs_embeds ? "yes" : "no") << "\n";
   std::cout << "  kv_cache:          " << (config.use_kv_cache ? "yes" : "no")
             << "\n";
+  if (config.use_kv_cache)
+    std::cout << "  stateful:          " << (config.stateful ? "yes" : "no")
+              << "\n";
+  if (config.batch_size > 0)
+    std::cout << "  batch_size:        " << config.batch_size << "\n";
+  if (config.seq_len > 0)
+    std::cout << "  seq_len:           " << config.seq_len << "\n";
   if (!tokenizer_dir.empty())
     std::cout << "  tokenizer_src:     " << tokenizer_dir << "\n";
   std::cout << "\n";
