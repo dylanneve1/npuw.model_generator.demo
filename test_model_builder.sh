@@ -139,6 +139,16 @@ CONFIGS=(
     "vlm_2d_gqa|--inputs-embeds --position-ids 2d --num-kv-heads 4 --vocab-size 151936"
     "vlm_2d_int8|--inputs-embeds --position-ids 2d --weight-type int8 --vocab-size 151936"
 
+    # Static shapes (batch_size + seq_len)
+    "static_b1_s128|--batch-size 1 --seq-len 128"
+    "static_b1_s1|--batch-size 1 --seq-len 1"
+    "static_int4_gqa|--batch-size 1 --seq-len 128 --weight-type int4 --num-kv-heads 2"
+
+    # Stateless KV cache (Parameter/Result instead of ReadValue/Assign)
+    "stateless_default|--stateless"
+    "stateless_int8_gqa|--stateless --weight-type int8 --num-kv-heads 2"
+    "stateless_static|--stateless --batch-size 1 --seq-len 128"
+
     # Combined configs — stress different code paths together
     "int8_layer_gelu_interleaved_gqa|--weight-type int8 --norm-type layer --ffn-type gelu --rope-type interleaved --num-kv-heads 2"
     "int4_group128_gqa_interleaved|--weight-type int4 --group-size 128 --num-kv-heads 2 --rope-type interleaved"
@@ -198,6 +208,14 @@ is_known_limitation() {
     # doesn't handle MAX_PROMPT_LEN config property, causing NPU plugin rejection.
     if [[ "$backend_name" == "NPU_hfa" ]] && [[ "$config_args" == *"--position-ids 3d"* ]]; then
         echo "qwen2_5_vl VLMPipeline + HFA attention hint causes Optimum fallback"
+        return 0
+    fi
+
+    # Stateless models + NPU: NPUW expects stateful models internally
+    # (StatefulToStateless is run by NPUW during compilation). Stateless models
+    # with Parameter/Result KV cache are not supported by the NPU pipeline.
+    if [[ "$backend_name" == NPU_* ]] && [[ "$config_args" == *"--stateless"* ]]; then
+        echo "stateless KV cache not supported by NPUW pipeline (expects stateful)"
         return 0
     fi
 
