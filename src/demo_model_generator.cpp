@@ -67,16 +67,7 @@ static void print_help(const char *prog) {
   std::cout << "  --position-ids <type>   Position IDs shape: 2d, 3d, none "
                "(default: 2d)\n";
   std::cout
-      << "  --no-kv-cache           Disable KV cache (stateless model)\n";
-  std::cout
-      << "  --stateless             Stateless KV cache (Parameter/Result, no "
-         "ReadValue/Assign)\n";
-  std::cout
-      << "  --batch-size <N>        Static batch dimension, 0=dynamic "
-         "(default: 0)\n";
-  std::cout
-      << "  --seq-len <N>           Static sequence length, 0=dynamic "
-         "(default: 0)\n\n";
+      << "  --no-kv-cache           Disable KV cache (stateless model)\n\n";
   std::cout << "Whisper options (defaults match whisper-tiny):\n";
   std::cout << "  --d-model <N>           Model dimension (default: 384)\n";
   std::cout << "  --encoder-layers <N>    Encoder layers (default: 4)\n";
@@ -100,7 +91,7 @@ static void print_help(const char *prog) {
   std::cout << "  -h, --help              Show this help\n";
 }
 
-static void write_config_json(const fs::path &dir, const ModelConfig &config,
+static void write_config_json(const fs::path &dir, const BaseModelConfig &config,
                               size_t context_len,
                               const std::string &model_type_id) {
   bool qwen_tokens =
@@ -145,7 +136,7 @@ static void write_config_json(const fs::path &dir, const ModelConfig &config,
 }
 
 static void write_embedding_config_json(const fs::path &dir,
-                                        const ModelConfig &config,
+                                        const BaseModelConfig &config,
                                         size_t context_len) {
   std::ofstream ofs(dir / "config.json");
   ofs << "{\n";
@@ -164,7 +155,7 @@ static void write_embedding_config_json(const fs::path &dir,
 }
 
 static void write_encoder_config_json(const fs::path &dir,
-                                      const ModelConfig &config) {
+                                      const BertConfig &config) {
   std::ofstream ofs(dir / "config.json");
   ofs << "{\n";
   ofs << "  \"model_type\": \"bert\",\n";
@@ -235,25 +226,26 @@ static void symlink_vlm_assets(const fs::path &src_dir,
 }
 
 static void write_whisper_configs(const fs::path &dir,
-                                  const ModelConfig &config) {
+                                  const WhisperEncoderConfig &enc,
+                                  const WhisperDecoderConfig &dec) {
   {
     std::ofstream ofs(dir / "config.json");
     ofs << "{\n";
     ofs << "  \"model_type\": \"whisper\",\n";
     ofs << "  \"architectures\": [\"WhisperForConditionalGeneration\"],\n";
     ofs << "  \"is_encoder_decoder\": true,\n";
-    ofs << "  \"d_model\": " << config.hidden_size << ",\n";
-    ofs << "  \"encoder_layers\": " << config.get_encoder_layers() << ",\n";
-    ofs << "  \"encoder_attention_heads\": " << config.num_heads << ",\n";
-    ofs << "  \"encoder_ffn_dim\": " << config.intermediate_size << ",\n";
-    ofs << "  \"decoder_layers\": " << config.get_decoder_layers() << ",\n";
-    ofs << "  \"decoder_attention_heads\": " << config.num_heads << ",\n";
-    ofs << "  \"decoder_ffn_dim\": " << config.intermediate_size << ",\n";
-    ofs << "  \"vocab_size\": " << config.vocab_size << ",\n";
-    ofs << "  \"num_mel_bins\": " << config.num_mel_bins << ",\n";
-    ofs << "  \"max_source_positions\": " << config.max_source_positions
+    ofs << "  \"d_model\": " << enc.hidden_size << ",\n";
+    ofs << "  \"encoder_layers\": " << enc.get_encoder_layers() << ",\n";
+    ofs << "  \"encoder_attention_heads\": " << enc.num_heads << ",\n";
+    ofs << "  \"encoder_ffn_dim\": " << enc.intermediate_size << ",\n";
+    ofs << "  \"decoder_layers\": " << dec.get_decoder_layers() << ",\n";
+    ofs << "  \"decoder_attention_heads\": " << enc.num_heads << ",\n";
+    ofs << "  \"decoder_ffn_dim\": " << enc.intermediate_size << ",\n";
+    ofs << "  \"vocab_size\": " << enc.vocab_size << ",\n";
+    ofs << "  \"num_mel_bins\": " << enc.num_mel_bins << ",\n";
+    ofs << "  \"max_source_positions\": " << enc.max_source_positions
         << ",\n";
-    ofs << "  \"max_target_positions\": " << config.max_target_positions
+    ofs << "  \"max_target_positions\": " << dec.max_target_positions
         << ",\n";
     ofs << "  \"activation_function\": \"gelu\",\n";
     ofs << "  \"bos_token_id\": 50257,\n";
@@ -273,7 +265,7 @@ static void write_whisper_configs(const fs::path &dir,
     ofs << "  \"no_timestamps_token_id\": 50363,\n";
     ofs << "  \"begin_suppress_tokens\": [220, 50257],\n";
     ofs << "  \"is_multilingual\": true,\n";
-    ofs << "  \"max_length\": " << config.max_target_positions << ",\n";
+    ofs << "  \"max_length\": " << dec.max_target_positions << ",\n";
     ofs << "  \"return_timestamps\": false,\n";
     ofs << "  \"lang_to_id\": {\"<|en|>\": 50259},\n";
     ofs << "  \"task_to_id\": {\"transcribe\": 50359, \"translate\": 50358}\n";
@@ -283,7 +275,7 @@ static void write_whisper_configs(const fs::path &dir,
     std::ofstream ofs(dir / "preprocessor_config.json");
     ofs << "{\n";
     ofs << "  \"feature_extractor_type\": \"WhisperFeatureExtractor\",\n";
-    ofs << "  \"feature_size\": " << config.num_mel_bins << ",\n";
+    ofs << "  \"feature_size\": " << enc.num_mel_bins << ",\n";
     ofs << "  \"sampling_rate\": 16000,\n";
     ofs << "  \"hop_length\": 160,\n";
     ofs << "  \"n_fft\": 400,\n";
@@ -324,7 +316,7 @@ int main(int argc, char *argv[]) {
   std::string model_type;
   std::string tokenizer_dir;
 
-  ModelConfig config;
+  LLMConfig config;
   config.num_layers = 12;
   config.hidden_size = 256;
   config.num_heads = 8;
@@ -335,17 +327,17 @@ int main(int argc, char *argv[]) {
   config.use_kv_cache = true;
   config.precision = ov::element::f32;
 
-  ModelConfig whisper_cfg;
-  whisper_cfg.hidden_size = 384;
-  whisper_cfg.num_heads = 6;
-  whisper_cfg.head_dim = 64;
-  whisper_cfg.encoder_layers = 4;
-  whisper_cfg.decoder_layers = 4;
-  whisper_cfg.intermediate_size = 1536;
-  whisper_cfg.vocab_size = 51865;
-  whisper_cfg.num_mel_bins = 80;
-  whisper_cfg.max_source_positions = 1500;
-  whisper_cfg.max_target_positions = 448;
+  WhisperEncoderConfig whisper_enc;
+  whisper_enc.hidden_size = 384;
+  whisper_enc.num_heads = 6;
+  whisper_enc.head_dim = 64;
+  whisper_enc.encoder_layers = 4;
+  whisper_enc.intermediate_size = 1536;
+  whisper_enc.vocab_size = 51865;
+  whisper_enc.num_mel_bins = 80;
+  whisper_enc.max_source_positions = 1500;
+  size_t whisper_decoder_layers = 4;
+  size_t whisper_max_target_positions = 448;
 
   size_t context_len = 128;
   std::string ffn_type_str = "swiglu";
@@ -476,35 +468,23 @@ int main(int argc, char *argv[]) {
       config.use_inputs_embeds = true;
     } else if (arg == "--no-kv-cache") {
       config.use_kv_cache = false;
-    } else if (arg == "--stateless") {
-      config.stateful = false;
-    } else if (arg == "--batch-size" && i + 1 < argc) {
-      if (!parse_size_t(argv[++i], config.batch_size)) {
-        std::cerr << "Error: invalid value for --batch-size\n";
-        return 1;
-      }
-    } else if (arg == "--seq-len" && i + 1 < argc) {
-      if (!parse_size_t(argv[++i], config.seq_len)) {
-        std::cerr << "Error: invalid value for --seq-len\n";
-        return 1;
-      }
     } else if (arg == "--d-model" && i + 1 < argc) {
-      if (!parse_size_t(argv[++i], whisper_cfg.hidden_size)) {
+      if (!parse_size_t(argv[++i], whisper_enc.hidden_size)) {
         std::cerr << "Error: invalid value for --d-model\n";
         return 1;
       }
     } else if (arg == "--encoder-layers" && i + 1 < argc) {
-      if (!parse_size_t(argv[++i], whisper_cfg.encoder_layers)) {
+      if (!parse_size_t(argv[++i], whisper_enc.encoder_layers)) {
         std::cerr << "Error: invalid value for --encoder-layers\n";
         return 1;
       }
     } else if (arg == "--decoder-layers" && i + 1 < argc) {
-      if (!parse_size_t(argv[++i], whisper_cfg.decoder_layers)) {
+      if (!parse_size_t(argv[++i], whisper_decoder_layers)) {
         std::cerr << "Error: invalid value for --decoder-layers\n";
         return 1;
       }
     } else if (arg == "--ffn-dim" && i + 1 < argc) {
-      if (!parse_size_t(argv[++i], whisper_cfg.intermediate_size)) {
+      if (!parse_size_t(argv[++i], whisper_enc.intermediate_size)) {
         std::cerr << "Error: invalid value for --ffn-dim\n";
         return 1;
       }
@@ -537,73 +517,75 @@ int main(int argc, char *argv[]) {
 
   if (model_type == "whisper") {
     if (config.num_heads != 8)
-      whisper_cfg.num_heads = config.num_heads;
+      whisper_enc.num_heads = config.num_heads;
     if (config.vocab_size != 32000)
-      whisper_cfg.vocab_size = config.vocab_size;
+      whisper_enc.vocab_size = config.vocab_size;
 
     WeightFn wf;
     if (weight_type_str == "fp16")
       wf = FP16Weight{};
     else
       wf = FP32Weight{};
-    whisper_cfg.weight = wf;
+    whisper_enc.weight = wf;
 
-    whisper_cfg.head_dim = whisper_cfg.hidden_size / whisper_cfg.num_heads;
+    whisper_enc.head_dim = whisper_enc.hidden_size / whisper_enc.num_heads;
 
     std::cout << "Generating Whisper model:\n";
-    std::cout << "  d_model:           " << whisper_cfg.hidden_size << "\n";
-    std::cout << "  encoder_layers:    " << whisper_cfg.get_encoder_layers()
+    std::cout << "  d_model:           " << whisper_enc.hidden_size << "\n";
+    std::cout << "  encoder_layers:    " << whisper_enc.get_encoder_layers()
               << "\n";
-    std::cout << "  decoder_layers:    " << whisper_cfg.get_decoder_layers()
+    std::cout << "  decoder_layers:    " << whisper_decoder_layers << "\n";
+    std::cout << "  attention_heads:   " << whisper_enc.num_heads << "\n";
+    std::cout << "  ffn_dim:           " << whisper_enc.intermediate_size
               << "\n";
-    std::cout << "  attention_heads:   " << whisper_cfg.num_heads << "\n";
-    std::cout << "  ffn_dim:           " << whisper_cfg.intermediate_size
-              << "\n";
-    std::cout << "  vocab_size:        " << whisper_cfg.vocab_size << "\n";
+    std::cout << "  vocab_size:        " << whisper_enc.vocab_size << "\n";
     std::cout << "  weight:            " << weight_type_str << "\n";
     if (!tokenizer_dir.empty())
       std::cout << "  tokenizer_src:     " << tokenizer_dir << "\n";
     std::cout << "\n";
 
     ModelBuilder mb;
-    FloatWeight bias_wf(whisper_cfg.precision);
+    FloatWeight bias_wf(whisper_enc.precision);
 
-    ModelConfig enc_cfg = whisper_cfg;
-    enc_cfg.num_layers = whisper_cfg.get_encoder_layers();
-    enc_cfg.head_dim = whisper_cfg.hidden_size / whisper_cfg.num_heads;
-    enc_cfg.use_kv_cache = false;
-    enc_cfg.lm_head_weight = {};
-    enc_cfg.use_conv_features = true;
-    enc_cfg.attn_bias = bias_wf;
-    enc_cfg.norm = LayerNorm(whisper_cfg.hidden_size, whisper_cfg.precision);
-    enc_cfg.ffn = GELU(whisper_cfg.hidden_size, whisper_cfg.intermediate_size,
-                       whisper_cfg.precision, whisper_cfg.weight, bias_wf);
+    whisper_enc.attn_bias = bias_wf;
+    whisper_enc.norm =
+        LayerNorm(whisper_enc.hidden_size, whisper_enc.precision);
+    whisper_enc.ffn =
+        GELU(whisper_enc.hidden_size, whisper_enc.intermediate_size,
+             whisper_enc.precision, whisper_enc.weight, bias_wf);
 
-    auto encoder = mb.build_model(enc_cfg);
+    auto encoder = mb.build_whisper_encoder(whisper_enc);
     ov::pass::Serialize enc_serializer(
         (dest / "openvino_encoder_model.xml").string(),
         (dest / "openvino_encoder_model.bin").string());
     enc_serializer.run_on_model(encoder);
     std::cout << "Encoder model saved.\n";
 
-    ModelConfig dec_cfg = whisper_cfg;
-    dec_cfg.num_layers = whisper_cfg.get_decoder_layers();
-    dec_cfg.head_dim = whisper_cfg.hidden_size / whisper_cfg.num_heads;
-    dec_cfg.use_kv_cache = true;
-    dec_cfg.use_cross_attention = true;
+    WhisperDecoderConfig dec_cfg;
+    dec_cfg.hidden_size = whisper_enc.hidden_size;
+    dec_cfg.num_heads = whisper_enc.num_heads;
+    dec_cfg.head_dim = whisper_enc.head_dim;
+    dec_cfg.intermediate_size = whisper_enc.intermediate_size;
+    dec_cfg.vocab_size = whisper_enc.vocab_size;
+    dec_cfg.precision = whisper_enc.precision;
+    dec_cfg.weight = whisper_enc.weight;
+    dec_cfg.decoder_layers = whisper_decoder_layers;
+    dec_cfg.max_target_positions = whisper_max_target_positions;
     dec_cfg.attn_bias = bias_wf;
-    dec_cfg.norm = LayerNorm(whisper_cfg.hidden_size, whisper_cfg.precision);
-    dec_cfg.ffn = GELU(whisper_cfg.hidden_size, whisper_cfg.intermediate_size,
-                       whisper_cfg.precision, whisper_cfg.weight, bias_wf);
+    dec_cfg.norm =
+        LayerNorm(whisper_enc.hidden_size, whisper_enc.precision);
+    dec_cfg.ffn =
+        GELU(whisper_enc.hidden_size, whisper_enc.intermediate_size,
+             whisper_enc.precision, whisper_enc.weight, bias_wf);
 
-    auto decoder = mb.build_model(dec_cfg);
+    auto decoder = mb.build_whisper_decoder(dec_cfg);
     ov::pass::Serialize dec_serializer(
         (dest / "openvino_decoder_model.xml").string(),
         (dest / "openvino_decoder_model.bin").string());
     dec_serializer.run_on_model(decoder);
     std::cout << "Decoder model saved.\n";
 
-    write_whisper_configs(dest, whisper_cfg);
+    write_whisper_configs(dest, whisper_enc, dec_cfg);
 
     if (!tokenizer_dir.empty()) {
       copy_tokenizer_files(tokenizer_dir, dest);
@@ -621,16 +603,14 @@ int main(int argc, char *argv[]) {
 
   if (model_type == "embedding") {
     if (arch_str == "encoder") {
-      ModelConfig enc_config;
-      enc_config.hidden_size = config.hidden_size;
-      enc_config.num_heads = config.num_heads;
-      enc_config.head_dim = config.head_dim;
-      enc_config.intermediate_size = config.intermediate_size;
-      enc_config.vocab_size = config.vocab_size;
-      enc_config.num_layers = config.num_layers;
-      enc_config.precision = config.precision;
-      enc_config.use_kv_cache = false;
-      enc_config.lm_head_weight = {};
+      BertConfig bert_cfg;
+      bert_cfg.hidden_size = config.hidden_size;
+      bert_cfg.num_heads = config.num_heads;
+      bert_cfg.head_dim = config.head_dim;
+      bert_cfg.intermediate_size = config.intermediate_size;
+      bert_cfg.vocab_size = config.vocab_size;
+      bert_cfg.num_layers = config.num_layers;
+      bert_cfg.precision = config.precision;
 
       auto enc_qp = parse_quant_pattern(quant_pattern_str);
       const bool enc_needs_u4 =
@@ -647,37 +627,35 @@ int main(int argc, char *argv[]) {
         auto st = enc_needs_u4 ? ov::element::u4 : ov::element::i4;
         wf = CompressedWeight{st, group_size, enc_qp};
       }
-      enc_config.weight = wf;
-      enc_config.use_token_type_embedding = true;
-      enc_config.pre_norm = false;
+      bert_cfg.weight = wf;
       FloatWeight bias_wf(config.precision);
-      enc_config.attn_bias = bias_wf;
-      enc_config.norm = LayerNorm(enc_config.hidden_size, config.precision);
-      enc_config.ffn =
-          GELU(enc_config.hidden_size, enc_config.intermediate_size,
+      bert_cfg.attn_bias = bias_wf;
+      bert_cfg.norm = LayerNorm(bert_cfg.hidden_size, config.precision);
+      bert_cfg.ffn =
+          GELU(bert_cfg.hidden_size, bert_cfg.intermediate_size,
                config.precision, wf, bias_wf);
 
       std::cout << "Generating BERT encoder embedding model:\n";
-      std::cout << "  layers:            " << enc_config.num_layers << "\n";
-      std::cout << "  hidden_size:       " << enc_config.hidden_size << "\n";
-      std::cout << "  num_heads:         " << enc_config.num_heads << "\n";
-      std::cout << "  head_dim:          " << enc_config.head_dim << "\n";
-      std::cout << "  intermediate_size: " << enc_config.intermediate_size
+      std::cout << "  layers:            " << bert_cfg.num_layers << "\n";
+      std::cout << "  hidden_size:       " << bert_cfg.hidden_size << "\n";
+      std::cout << "  num_heads:         " << bert_cfg.num_heads << "\n";
+      std::cout << "  head_dim:          " << bert_cfg.head_dim << "\n";
+      std::cout << "  intermediate_size: " << bert_cfg.intermediate_size
                 << "\n";
-      std::cout << "  vocab_size:        " << enc_config.vocab_size << "\n";
+      std::cout << "  vocab_size:        " << bert_cfg.vocab_size << "\n";
       std::cout << "  weight:            " << weight_type_str << "\n";
       if (!tokenizer_dir.empty())
         std::cout << "  tokenizer_src:     " << tokenizer_dir << "\n";
       std::cout << "\n";
 
       ModelBuilder mb;
-      auto model = mb.build_model(enc_config);
+      auto model = mb.build_embedding_encoder(bert_cfg);
 
       ov::pass::Serialize serializer((dest / "openvino_model.xml").string(),
                                      (dest / "openvino_model.bin").string());
       serializer.run_on_model(model);
 
-      write_encoder_config_json(dest, enc_config);
+      write_encoder_config_json(dest, bert_cfg);
     } else {
       config.use_kv_cache = false;
       config.lm_head_weight = {};
@@ -732,7 +710,7 @@ int main(int argc, char *argv[]) {
       std::cout << "\n";
 
       ModelBuilder mb;
-      auto model = mb.build_model(config);
+      auto model = mb.build_llm(config);
 
       ov::pass::Serialize serializer((dest / "openvino_model.xml").string(),
                                      (dest / "openvino_model.bin").string());
@@ -835,19 +813,12 @@ int main(int argc, char *argv[]) {
             << (config.use_inputs_embeds ? "yes" : "no") << "\n";
   std::cout << "  kv_cache:          " << (config.use_kv_cache ? "yes" : "no")
             << "\n";
-  if (config.use_kv_cache)
-    std::cout << "  stateful:          " << (config.stateful ? "yes" : "no")
-              << "\n";
-  if (config.batch_size > 0)
-    std::cout << "  batch_size:        " << config.batch_size << "\n";
-  if (config.seq_len > 0)
-    std::cout << "  seq_len:           " << config.seq_len << "\n";
   if (!tokenizer_dir.empty())
     std::cout << "  tokenizer_src:     " << tokenizer_dir << "\n";
   std::cout << "\n";
 
   ModelBuilder mb;
-  auto model = mb.build_model(config);
+  auto model = mb.build_llm(config);
 
   if (config.use_inputs_embeds) {
     ov::pass::Serialize lang_serializer(
