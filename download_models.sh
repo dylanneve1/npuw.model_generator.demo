@@ -45,6 +45,11 @@ declare -A ARTIFACTORY_MODELS=(
     ["whisper/whisper-tiny_fp16_dyn_stateful.tgz"]="whisper"
 )
 
+# --- HuggingFace models (downloaded directly, not from Artifactory) ---
+declare -A HF_MODELS=(
+    ["dylanneve1/Qwen3.5-0.8B_int4_sym_group-1_dyn_stateful"]="hybrid-vlm"
+)
+
 # --- Embedding models exported via optimum-cli (Artifactory RAG tarballs lack model files) ---
 declare -A OPTIMUM_MODELS=(
     ["Qwen/Qwen3-Embedding-0.6B"]="embedding-decoder"
@@ -88,6 +93,27 @@ for hf_id in "${!OPTIMUM_MODELS[@]}"; do
 
     mkdir -p "$dest"
     if optimum-cli export openvino -m "$hf_id" --task feature-extraction "$dest" 2>/dev/null; then
+        echo "OK ($(du -sh "$dest" | cut -f1))"
+    else
+        echo "FAILED"
+        FAIL=1
+    fi
+done
+
+# --- Download HuggingFace models ---
+for hf_id in "${!HF_MODELS[@]}"; do
+    label="${HF_MODELS[$hf_id]}"
+    dest="$MODELS_DIR/$label"
+
+    printf "  %-20s %s ... " "$label" "$hf_id"
+
+    if [[ -d "$dest" ]] && ls "$dest"/openvino_language_model.xml &>/dev/null; then
+        echo "SKIP (already exists)"
+        continue
+    fi
+
+    mkdir -p "$dest"
+    if huggingface-cli download "$hf_id" --local-dir "$dest" 2>/dev/null; then
         echo "OK ($(du -sh "$dest" | cut -f1))"
     else
         echo "FAILED"

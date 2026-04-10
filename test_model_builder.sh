@@ -32,6 +32,7 @@ TOKENIZER_DIR="$SCRIPT_DIR/models/llm"
 QWEN_TOKENIZER_DIR="$SCRIPT_DIR/models/vlm"
 QWEN3_EMB_TOKENIZER_DIR="$SCRIPT_DIR/models/embedding-decoder"
 CONTRIEVER_TOKENIZER_DIR="$SCRIPT_DIR/models/embedding-encoder"
+QWEN35_TOKENIZER_DIR="$SCRIPT_DIR/models/hybrid-vlm"
 WHISPER_TOKENIZER_DIR="$SCRIPT_DIR/models/whisper"
 TEST_AUDIO="$SCRIPT_DIR/models/test_audio.wav"
 CONFIGS_DIR="$SCRIPT_DIR/configs"
@@ -87,6 +88,11 @@ if [[ ! -d "$QWEN3_EMB_TOKENIZER_DIR" ]]; then
 fi
 if [[ ! -d "$CONTRIEVER_TOKENIZER_DIR" ]]; then
     echo "ERROR: Contriever tokenizer directory not found: $CONTRIEVER_TOKENIZER_DIR"
+    exit 1
+fi
+if [[ ! -d "$QWEN35_TOKENIZER_DIR" ]]; then
+    echo "ERROR: Qwen3.5 tokenizer directory not found: $QWEN35_TOKENIZER_DIR"
+    echo "Run: ./download_models.sh"
     exit 1
 fi
 if [[ ! -f "$CONFIGS_DIR/npuw.json" ]]; then
@@ -160,6 +166,20 @@ CONFIGS=(
     "emb_encoder_default|--type embedding --arch encoder --vocab-size 30522"
     "emb_encoder_int8|--type embedding --arch encoder --weight-type int8 --vocab-size 30522"
     "emb_encoder_fp16|--type embedding --arch encoder --weight-type fp16 --vocab-size 30522"
+
+    # Hybrid linear attention — Qwen3.5-style (N linear : 1 full attention)
+    "hybrid_3_1_default|--hybrid 3 --num-layers 24"
+    "hybrid_3_1_gqa|--hybrid 3 --num-layers 24 --num-kv-heads 2"
+    "hybrid_3_1_fp16|--hybrid 3 --num-layers 24 --weight-type fp16"
+    "hybrid_3_1_int8|--hybrid 3 --num-layers 24 --weight-type int8"
+    "hybrid_3_1_int4|--hybrid 3 --num-layers 24 --weight-type int4"
+    "hybrid_1_1_fp16|--hybrid 1 --num-layers 24 --weight-type fp16"
+    "hybrid_custom_dims|--hybrid 3 --num-layers 24 --num-kv-heads 2 --linear-num-key-heads 16 --linear-key-head-dim 8 --linear-num-value-heads 16 --linear-value-head-dim 8 --linear-conv-kernel-dim 4"
+
+    # Hybrid VLM — Qwen3.5-style (inputs_embeds, no position_ids, qwen3_5 model type)
+    "hybrid_vlm_default|--hybrid 3 --num-layers 24 --inputs-embeds --rope-type none --position-ids none --vocab-size 248320"
+    "hybrid_vlm_gqa|--hybrid 3 --num-layers 24 --inputs-embeds --rope-type none --position-ids none --num-kv-heads 2 --vocab-size 248320"
+    "hybrid_vlm_int8|--hybrid 3 --num-layers 24 --inputs-embeds --rope-type none --position-ids none --weight-type int8 --vocab-size 248320"
 )
 
 # --- Backend configurations ---
@@ -201,6 +221,19 @@ is_known_limitation() {
         return 0
     fi
 
+    # Hybrid models: NPUW HFA/Pyramid don't recognize cache_params naming
+    if [[ "$backend_name" == "NPU_hfa" || "$backend_name" == "NPU_pyramid" ]] && [[ "$config_args" == *"--hybrid"* ]]; then
+        echo "Hybrid models use cache_params naming, not supported by HFA/Pyramid partitioning"
+        return 0
+    fi
+
+    # Hybrid VLM (qwen3_5 model_type): llm_bench VLM path uses AutoConfig which requires
+    # transformers to recognize qwen3_5. Fails with transformers < 5.x.
+    if [[ "$config_args" == *"--hybrid"* ]] && [[ "$config_args" == *"--inputs-embeds"* ]]; then
+        echo "Hybrid VLM (qwen3_5) requires transformers >= 5.x for llm_bench AutoConfig"
+        return 0
+    fi
+
     return 1
 }
 
@@ -210,6 +243,12 @@ is_known_dump_limitation() {
     local config_name="$1"
     local config_args="$2"
     local dump_backend="$3"
+
+    # Hybrid models: NPUW partitioning doesn't recognize cache_params naming yet
+    if [[ "$config_args" == *"--hybrid"* ]]; then
+        echo "Hybrid models use cache_params naming, NPUW dump not yet supported"
+        return 0
+    fi
 
     # DCOFF AVX2 unpack requires the weight tensor's last dimension % 64 == 0.
     # Group-quantized weights are folded to 3D [N, num_groups, group_size] by
@@ -434,6 +473,7 @@ for config_entry in "${CONFIGS[@]}"; do
     IS_WHISPER=0
     IS_EMB_DECODER=0
     IS_EMB_ENCODER=0
+    IS_HYBRID=0
     if [[ "$CONFIG_ARGS" == *"--type whisper"* ]]; then
         IS_WHISPER=1
         TOK_DIR="$WHISPER_TOKENIZER_DIR"
@@ -443,10 +483,16 @@ for config_entry in "${CONFIGS[@]}"; do
     elif [[ "$CONFIG_ARGS" == *"--type embedding"* ]]; then
         IS_EMB_DECODER=1
         TOK_DIR="$QWEN3_EMB_TOKENIZER_DIR"
+    elif [[ "$CONFIG_ARGS" == *"--inputs-embeds"* ]] && [[ "$CONFIG_ARGS" == *"--hybrid"* ]]; then
+        IS_HYBRID=1
+        TOK_DIR="$QWEN35_TOKENIZER_DIR"
     elif [[ "$CONFIG_ARGS" == *"--inputs-embeds"* ]]; then
         TOK_DIR="$QWEN_TOKENIZER_DIR"
     else
         TOK_DIR="$TOKENIZER_DIR"
+    fi
+    if [[ "$CONFIG_ARGS" == *"--hybrid"* ]]; then
+        IS_HYBRID=1
     fi
 
     # Generate model — whisper/embedding configs already include --type, LLM configs need it prepended

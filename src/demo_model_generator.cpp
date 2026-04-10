@@ -67,7 +67,19 @@ static void print_help(const char *prog) {
   std::cout << "  --position-ids <type>   Position IDs shape: 2d, 3d, none "
                "(default: 2d)\n";
   std::cout
-      << "  --no-kv-cache           Disable KV cache (stateless model)\n\n";
+      << "  --no-kv-cache           Disable KV cache (stateless model)\n";
+  std::cout
+      << "  --hybrid <N>            Hybrid: N linear_attention layers per 1 full_attention\n";
+  std::cout
+      << "  --linear-num-key-heads <N>    Linear attn key heads (default: num_heads)\n";
+  std::cout
+      << "  --linear-key-head-dim <N>     Linear attn key head dim (default: head_dim)\n";
+  std::cout
+      << "  --linear-num-value-heads <N>  Linear attn value heads (default: 2*num_heads)\n";
+  std::cout
+      << "  --linear-value-head-dim <N>   Linear attn value head dim (default: head_dim)\n";
+  std::cout
+      << "  --linear-conv-kernel-dim <N>  Conv kernel dim (default: 4)\n\n";
   std::cout << "Whisper options (defaults match whisper-tiny):\n";
   std::cout << "  --d-model <N>           Model dimension (default: 384)\n";
   std::cout << "  --encoder-layers <N>    Encoder layers (default: 4)\n";
@@ -91,11 +103,11 @@ static void print_help(const char *prog) {
   std::cout << "  -h, --help              Show this help\n";
 }
 
-static void write_config_json(const fs::path &dir, const BaseModelConfig &config,
+static void write_config_json(const fs::path &dir, const LLMConfig &config,
                               size_t context_len,
                               const std::string &model_type_id) {
   bool qwen_tokens =
-      (model_type_id == "qwen2_5_vl" || model_type_id == "llava");
+      (model_type_id == "qwen2_5_vl" || model_type_id == "llava" || model_type_id == "qwen3_5");
   {
     std::ofstream ofs(dir / "config.json");
     ofs << "{\n";
@@ -107,6 +119,8 @@ static void write_config_json(const fs::path &dir, const BaseModelConfig &config
     ofs << "  \"intermediate_size\": " << config.intermediate_size << ",\n";
     ofs << "  \"vocab_size\": " << config.vocab_size << ",\n";
     ofs << "  \"max_position_embeddings\": " << context_len << ",\n";
+    if (config.mamba_ratio > 0)
+      ofs << "  \"hybrid_mamba_ratio\": " << config.mamba_ratio << ",\n";
     if (qwen_tokens) {
       ofs << "  \"bos_token_id\": 151643,\n";
       ofs << "  \"eos_token_id\": 151645,\n";
@@ -206,6 +220,8 @@ static void symlink_vlm_assets(const fs::path &src_dir,
       "openvino_vision_embeddings_model.bin",
       "openvino_vision_embeddings_merger_model.xml",
       "openvino_vision_embeddings_merger_model.bin",
+      "openvino_vision_embeddings_pos_model.xml",
+      "openvino_vision_embeddings_pos_model.bin",
       "preprocessor_config.json",
       "video_preprocessor_config.json",
   };
@@ -226,8 +242,8 @@ static void symlink_vlm_assets(const fs::path &src_dir,
 }
 
 static void write_whisper_configs(const fs::path &dir,
-                                  const WhisperEncoderConfig &enc,
-                                  const WhisperDecoderConfig &dec) {
+                                  const WhisperConfig &enc,
+                                  const WhisperConfig &dec) {
   {
     std::ofstream ofs(dir / "config.json");
     ofs << "{\n";
@@ -327,7 +343,7 @@ int main(int argc, char *argv[]) {
   config.use_kv_cache = true;
   config.precision = ov::element::f32;
 
-  WhisperEncoderConfig whisper_enc;
+  WhisperConfig whisper_enc;
   whisper_enc.hidden_size = 384;
   whisper_enc.num_heads = 6;
   whisper_enc.head_dim = 64;
@@ -468,6 +484,36 @@ int main(int argc, char *argv[]) {
       config.use_inputs_embeds = true;
     } else if (arg == "--no-kv-cache") {
       config.use_kv_cache = false;
+    } else if (arg == "--hybrid" && i + 1 < argc) {
+      if (!parse_size_t(argv[++i], config.mamba_ratio)) {
+        std::cerr << "Error: invalid value for --hybrid\n";
+        return 1;
+      }
+    } else if (arg == "--linear-num-key-heads" && i + 1 < argc) {
+      if (!parse_size_t(argv[++i], config.linear_num_key_heads)) {
+        std::cerr << "Error: invalid value for --linear-num-key-heads\n";
+        return 1;
+      }
+    } else if (arg == "--linear-key-head-dim" && i + 1 < argc) {
+      if (!parse_size_t(argv[++i], config.linear_key_head_dim)) {
+        std::cerr << "Error: invalid value for --linear-key-head-dim\n";
+        return 1;
+      }
+    } else if (arg == "--linear-num-value-heads" && i + 1 < argc) {
+      if (!parse_size_t(argv[++i], config.linear_num_value_heads)) {
+        std::cerr << "Error: invalid value for --linear-num-value-heads\n";
+        return 1;
+      }
+    } else if (arg == "--linear-value-head-dim" && i + 1 < argc) {
+      if (!parse_size_t(argv[++i], config.linear_value_head_dim)) {
+        std::cerr << "Error: invalid value for --linear-value-head-dim\n";
+        return 1;
+      }
+    } else if (arg == "--linear-conv-kernel-dim" && i + 1 < argc) {
+      if (!parse_size_t(argv[++i], config.linear_conv_kernel_dim)) {
+        std::cerr << "Error: invalid value for --linear-conv-kernel-dim\n";
+        return 1;
+      }
     } else if (arg == "--d-model" && i + 1 < argc) {
       if (!parse_size_t(argv[++i], whisper_enc.hidden_size)) {
         std::cerr << "Error: invalid value for --d-model\n";
@@ -561,7 +607,7 @@ int main(int argc, char *argv[]) {
     enc_serializer.run_on_model(encoder);
     std::cout << "Encoder model saved.\n";
 
-    WhisperDecoderConfig dec_cfg;
+    WhisperConfig dec_cfg;
     dec_cfg.hidden_size = whisper_enc.hidden_size;
     dec_cfg.num_heads = whisper_enc.num_heads;
     dec_cfg.head_dim = whisper_enc.head_dim;
@@ -657,10 +703,19 @@ int main(int argc, char *argv[]) {
 
       write_encoder_config_json(dest, bert_cfg);
     } else {
-      config.use_kv_cache = false;
-      config.lm_head_weight = {};
-      config.internal_position_ids = true;
-      config.qk_norm = RMSNorm(config.head_dim, config.precision);
+      LLMConfig emb_cfg;
+      emb_cfg.num_layers = config.num_layers;
+      emb_cfg.hidden_size = config.hidden_size;
+      emb_cfg.num_heads = config.num_heads;
+      emb_cfg.head_dim = config.head_dim;
+      emb_cfg.num_kv_heads = config.num_kv_heads;
+      emb_cfg.intermediate_size = config.intermediate_size;
+      emb_cfg.vocab_size = config.vocab_size;
+      emb_cfg.precision = config.precision;
+      emb_cfg.use_kv_cache = false;
+      emb_cfg.lm_head_weight = {};
+      emb_cfg.internal_position_ids = true;
+      emb_cfg.qk_norm = RMSNorm(config.head_dim, config.precision);
 
       auto emb_qp = parse_quant_pattern(quant_pattern_str);
       const bool emb_needs_u4 =
@@ -677,29 +732,29 @@ int main(int argc, char *argv[]) {
         auto st = emb_needs_u4 ? ov::element::u4 : ov::element::i4;
         weight_fn = CompressedWeight{st, group_size, emb_qp};
       }
-      config.weight = weight_fn;
+      emb_cfg.weight = weight_fn;
 
-      if (norm_type_str == "rms")
-        config.norm = RMSNorm(config.hidden_size, config.precision);
+      if (norm_type_str == "layer")
+        emb_cfg.norm = LayerNorm(emb_cfg.hidden_size, emb_cfg.precision);
       else
-        config.norm = LayerNorm(config.hidden_size, config.precision);
+        emb_cfg.norm = RMSNorm(emb_cfg.hidden_size, emb_cfg.precision);
 
-      if (ffn_type_str == "swiglu")
-        config.ffn = SwiGLU(config.hidden_size, config.intermediate_size,
-                            config.precision, weight_fn);
+      if (ffn_type_str == "gelu")
+        emb_cfg.ffn = GELU(emb_cfg.hidden_size, emb_cfg.intermediate_size,
+                           emb_cfg.precision, weight_fn);
       else
-        config.ffn = GELU(config.hidden_size, config.intermediate_size,
-                          config.precision, weight_fn);
+        emb_cfg.ffn = SwiGLU(emb_cfg.hidden_size, emb_cfg.intermediate_size,
+                             emb_cfg.precision, weight_fn);
 
-      std::cout << "Generating decoder-only embedding model:\n";
-      std::cout << "  layers:            " << config.num_layers << "\n";
-      std::cout << "  hidden_size:       " << config.hidden_size << "\n";
-      std::cout << "  num_heads:         " << config.num_heads << "\n";
-      std::cout << "  num_kv_heads:      " << config.get_kv_heads()
-                << (config.num_kv_heads == 0 ? " (MHA)" : " (GQA)") << "\n";
-      std::cout << "  head_dim:          " << config.head_dim << "\n";
-      std::cout << "  intermediate_size: " << config.intermediate_size << "\n";
-      std::cout << "  vocab_size:        " << config.vocab_size << "\n";
+      std::cout << "Generating Qwen3-style embedding model:\n";
+      std::cout << "  layers:            " << emb_cfg.num_layers << "\n";
+      std::cout << "  hidden_size:       " << emb_cfg.hidden_size << "\n";
+      std::cout << "  num_heads:         " << emb_cfg.num_heads << "\n";
+      std::cout << "  num_kv_heads:      " << emb_cfg.get_kv_heads()
+                << (emb_cfg.num_kv_heads == 0 ? " (MHA)" : " (GQA)") << "\n";
+      std::cout << "  head_dim:          " << emb_cfg.head_dim << "\n";
+      std::cout << "  intermediate_size: " << emb_cfg.intermediate_size << "\n";
+      std::cout << "  vocab_size:        " << emb_cfg.vocab_size << "\n";
       std::cout << "  ffn:               " << ffn_type_str << "\n";
       std::cout << "  norm:              " << norm_type_str << "\n";
       std::cout << "  weight:            " << weight_type_str << "\n";
@@ -710,13 +765,13 @@ int main(int argc, char *argv[]) {
       std::cout << "\n";
 
       ModelBuilder mb;
-      auto model = mb.build_llm(config);
+      auto model = mb.build_llm(emb_cfg);
 
       ov::pass::Serialize serializer((dest / "openvino_model.xml").string(),
                                      (dest / "openvino_model.bin").string());
       serializer.run_on_model(model);
 
-      write_embedding_config_json(dest, config, context_len);
+      write_embedding_config_json(dest, emb_cfg, context_len);
     }
 
     if (!tokenizer_dir.empty()) {
@@ -813,6 +868,17 @@ int main(int argc, char *argv[]) {
             << (config.use_inputs_embeds ? "yes" : "no") << "\n";
   std::cout << "  kv_cache:          " << (config.use_kv_cache ? "yes" : "no")
             << "\n";
+  if (config.mamba_ratio > 0) {
+    std::cout << "  hybrid:            " << config.mamba_ratio << " linear_attn : 1 full_attn\n";
+    std::cout << "  key_heads:         " << config.get_linear_num_key_heads() << "\n";
+    std::cout << "  key_head_dim:      " << config.get_linear_key_head_dim() << "\n";
+    std::cout << "  value_heads:       " << config.get_linear_num_value_heads() << "\n";
+    std::cout << "  value_head_dim:    " << config.get_linear_value_head_dim() << "\n";
+    std::cout << "  key_dim:           " << config.get_key_dim() << "\n";
+    std::cout << "  value_dim:         " << config.get_value_dim() << "\n";
+    std::cout << "  conv_dim:          " << config.get_conv_dim() << "\n";
+    std::cout << "  conv_kernel:       " << config.linear_conv_kernel_dim << "\n";
+  }
   if (!tokenizer_dir.empty())
     std::cout << "  tokenizer_src:     " << tokenizer_dir << "\n";
   std::cout << "\n";
@@ -858,7 +924,12 @@ int main(int argc, char *argv[]) {
 
   std::string model_type_id = "llama";
   if (config.use_inputs_embeds) {
-    model_type_id = (position_ids_str == "3d") ? "qwen2_5_vl" : "llava";
+    if (config.mamba_ratio > 0)
+      model_type_id = "qwen3_5";
+    else if (position_ids_str == "3d")
+      model_type_id = "qwen2_5_vl";
+    else
+      model_type_id = "llava";
   }
   write_config_json(dest, config, context_len, model_type_id);
 
