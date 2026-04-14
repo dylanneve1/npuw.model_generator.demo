@@ -831,7 +831,7 @@ int main(int argc, char *argv[]) {
     // is non-trivial so the chain survives ConstantFolding, enabling NPUW pattern matching.
     // Note: nf4 would also match patterns but NPUW's nf4 unpack doesn't handle 3D batched scales.
     static const CompressedWeight moe_weight{ov::element::i4, 0, DCOffPattern::SYMM_NO_ZP};
-    config.ffn = GPTOSSBatchedMoEFFN(config.hidden_size, moe_inter, config.num_experts,
+    config.ffn = MoEFFN(config.hidden_size, moe_inter, config.num_experts,
                                      moe_k, config.precision, moe_weight);
   } else {
     if (ffn_type_str == "swiglu")

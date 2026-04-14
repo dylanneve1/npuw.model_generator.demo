@@ -388,6 +388,8 @@ EOF
    "MAX_PROMPT_LEN": 1024,
    "NPUW_LLM_GENERATE_MOE_HINT": "HOST_ROUTED",
    "NPUW_F16IC": "YES",
+   "NPUW_DCOFF_TYPE": "",
+   "NPUW_DCOFF_SCALE": "NO",
    "NPUW_DUMP_SUBS": "MIN",
    "NPUW_DUMP_SUBS_DIR": "$dump_dir"
 }
@@ -685,7 +687,7 @@ expected_sg_range() {
     # produce cleaner partitioning. Accept wide range; moe_subgraphs check validates
     # the MoE-specific part.
     if [[ "$config_args" == *"--num-experts"* ]]; then
-        echo "4 20"
+        echo "2 2"
         return
     fi
 
