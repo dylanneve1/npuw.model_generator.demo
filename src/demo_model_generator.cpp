@@ -19,6 +19,7 @@ namespace fs = std::filesystem;
 
 using namespace ov::test::npuw;
 
+
 static void print_help(const char *prog) {
   std::cout << "Usage: " << prog
             << " --type <llm|whisper|embedding> [options]\n\n";
@@ -67,7 +68,15 @@ static void print_help(const char *prog) {
   std::cout << "  --position-ids <type>   Position IDs shape: 2d, 3d, none "
                "(default: 2d)\n";
   std::cout
-      << "  --no-kv-cache           Disable KV cache (stateless model)\n\n";
+      << "  --no-kv-cache           Disable KV cache (stateless model)\n";
+  std::cout
+      << "  --num-experts <N>       MoE: total experts, 0=dense (default: 0)\n";
+  std::cout
+      << "  --num-experts-per-tok <N> MoE: top-K active experts (default: 2)\n";
+  std::cout
+      << "  --moe-intermediate-size <N> MoE: per-expert FFN size (default: "
+         "intermediate_size)\n";
+  std::cout << "\n";
   std::cout << "Whisper options (defaults match whisper-tiny):\n";
   std::cout << "  --d-model <N>           Model dimension (default: 384)\n";
   std::cout << "  --encoder-layers <N>    Encoder layers (default: 4)\n";
@@ -91,7 +100,7 @@ static void print_help(const char *prog) {
   std::cout << "  -h, --help              Show this help\n";
 }
 
-static void write_config_json(const fs::path &dir, const BaseModelConfig &config,
+static void write_config_json(const fs::path &dir, const LLMConfig &config,
                               size_t context_len,
                               const std::string &model_type_id) {
   bool qwen_tokens =
@@ -107,6 +116,11 @@ static void write_config_json(const fs::path &dir, const BaseModelConfig &config
     ofs << "  \"intermediate_size\": " << config.intermediate_size << ",\n";
     ofs << "  \"vocab_size\": " << config.vocab_size << ",\n";
     ofs << "  \"max_position_embeddings\": " << context_len << ",\n";
+    if (config.num_experts > 0) {
+      ofs << "  \"num_local_experts\": " << config.num_experts << ",\n";
+      size_t k = config.num_experts_per_tok > 0 ? config.num_experts_per_tok : 2;
+      ofs << "  \"num_experts_per_tok\": " << k << ",\n";
+    }
     if (qwen_tokens) {
       ofs << "  \"bos_token_id\": 151643,\n";
       ofs << "  \"eos_token_id\": 151645,\n";
@@ -226,8 +240,8 @@ static void symlink_vlm_assets(const fs::path &src_dir,
 }
 
 static void write_whisper_configs(const fs::path &dir,
-                                  const WhisperEncoderConfig &enc,
-                                  const WhisperDecoderConfig &dec) {
+                                  const WhisperConfig &enc,
+                                  const WhisperConfig &dec) {
   {
     std::ofstream ofs(dir / "config.json");
     ofs << "{\n";
@@ -327,7 +341,7 @@ int main(int argc, char *argv[]) {
   config.use_kv_cache = true;
   config.precision = ov::element::f32;
 
-  WhisperEncoderConfig whisper_enc;
+  WhisperConfig whisper_enc;
   whisper_enc.hidden_size = 384;
   whisper_enc.num_heads = 6;
   whisper_enc.head_dim = 64;
@@ -468,6 +482,21 @@ int main(int argc, char *argv[]) {
       config.use_inputs_embeds = true;
     } else if (arg == "--no-kv-cache") {
       config.use_kv_cache = false;
+    } else if (arg == "--num-experts" && i + 1 < argc) {
+      if (!parse_size_t(argv[++i], config.num_experts)) {
+        std::cerr << "Error: invalid value for --num-experts\n";
+        return 1;
+      }
+    } else if (arg == "--num-experts-per-tok" && i + 1 < argc) {
+      if (!parse_size_t(argv[++i], config.num_experts_per_tok)) {
+        std::cerr << "Error: invalid value for --num-experts-per-tok\n";
+        return 1;
+      }
+    } else if (arg == "--moe-intermediate-size" && i + 1 < argc) {
+      if (!parse_size_t(argv[++i], config.moe_intermediate_size)) {
+        std::cerr << "Error: invalid value for --moe-intermediate-size\n";
+        return 1;
+      }
     } else if (arg == "--d-model" && i + 1 < argc) {
       if (!parse_size_t(argv[++i], whisper_enc.hidden_size)) {
         std::cerr << "Error: invalid value for --d-model\n";
@@ -561,7 +590,7 @@ int main(int argc, char *argv[]) {
     enc_serializer.run_on_model(encoder);
     std::cout << "Encoder model saved.\n";
 
-    WhisperDecoderConfig dec_cfg;
+    WhisperConfig dec_cfg;
     dec_cfg.hidden_size = whisper_enc.hidden_size;
     dec_cfg.num_heads = whisper_enc.num_heads;
     dec_cfg.head_dim = whisper_enc.head_dim;
@@ -781,12 +810,37 @@ int main(int argc, char *argv[]) {
     };
   }
 
-  if (ffn_type_str == "swiglu")
-    config.ffn = SwiGLU(config.hidden_size, config.intermediate_size,
+  if (config.num_experts > 0) {
+    // GPT-OSS batched MoE pattern from model_builder.
+    // NPU/NPUW requires nf4 weights (Multiply→Convert chain must survive constant
+    // folding for GPTOSSExpert pattern matching). Assert this upfront.
+    if (weight_type_str != "fp16" && weight_type_str != "int4" && weight_type_str != "int8") {
+      std::cerr << "WARNING: MoE on NPU requires weight type that produces "
+                   "Multiply→Convert chain (fp16, int4, int8). Got: "
+                << weight_type_str
+                << ". Model will work on CPU but MoE subgraph isolation on NPU "
+                   "may not work.\n";
+    }
+    size_t moe_inter = config.moe_intermediate_size > 0
+                           ? config.moe_intermediate_size
+                           : config.intermediate_size;
+    size_t moe_k = config.num_experts_per_tok > 0
+                       ? config.num_experts_per_tok
+                       : 2;
+    // Pass i4 CompressedWeight for MoE expert/router weights — the i4→f16 Convert
+    // is non-trivial so the chain survives ConstantFolding, enabling NPUW pattern matching.
+    // Note: nf4 would also match patterns but NPUW's nf4 unpack doesn't handle 3D batched scales.
+    static const CompressedWeight moe_weight{ov::element::i4, 0, DCOffPattern::SYMM_NO_ZP};
+    config.ffn = GPTOSSBatchedMoEFFN(config.hidden_size, moe_inter, config.num_experts,
+                                     moe_k, config.precision, moe_weight);
+  } else {
+    if (ffn_type_str == "swiglu")
+      config.ffn = SwiGLU(config.hidden_size, config.intermediate_size,
+                          config.precision, weight_fn);
+    else
+      config.ffn = GELU(config.hidden_size, config.intermediate_size,
                         config.precision, weight_fn);
-  else
-    config.ffn = GELU(config.hidden_size, config.intermediate_size,
-                      config.precision, weight_fn);
+  }
 
   std::cout << "Generating " << (config.use_inputs_embeds ? "VLM" : "LLM")
             << " model:\n";
@@ -799,7 +853,8 @@ int main(int argc, char *argv[]) {
   std::cout << "  intermediate_size: " << config.intermediate_size << "\n";
   std::cout << "  vocab_size:        " << config.vocab_size << "\n";
   std::cout << "  context_len:       " << context_len << "\n";
-  std::cout << "  ffn:               " << ffn_type_str << "\n";
+  std::cout << "  ffn:               "
+            << (config.num_experts > 0 ? "moe" : ffn_type_str) << "\n";
   std::cout << "  norm:              " << norm_type_str << "\n";
   std::cout << "  rope:              " << rope_type_str << "\n";
   std::cout << "  weight:            " << weight_type_str;
@@ -813,6 +868,15 @@ int main(int argc, char *argv[]) {
             << (config.use_inputs_embeds ? "yes" : "no") << "\n";
   std::cout << "  kv_cache:          " << (config.use_kv_cache ? "yes" : "no")
             << "\n";
+  if (config.num_experts > 0) {
+    size_t k = config.num_experts_per_tok > 0 ? config.num_experts_per_tok : 2;
+    size_t moe_inter = config.moe_intermediate_size > 0
+                           ? config.moe_intermediate_size
+                           : config.intermediate_size;
+    std::cout << "  moe:               " << config.num_experts << " experts, top-"
+              << k << "\n";
+    std::cout << "  moe_inter_size:    " << moe_inter << "\n";
+  }
   if (!tokenizer_dir.empty())
     std::cout << "  tokenizer_src:     " << tokenizer_dir << "\n";
   std::cout << "\n";

@@ -160,6 +160,11 @@ CONFIGS=(
     "emb_encoder_default|--type embedding --arch encoder --vocab-size 30522"
     "emb_encoder_int8|--type embedding --arch encoder --weight-type int8 --vocab-size 30522"
     "emb_encoder_fp16|--type embedding --arch encoder --weight-type fp16 --vocab-size 30522"
+
+    # MoE (Mixture of Experts) — GPT-OSS-style with dimensions large enough for
+    # proper NPUW partitioning (expert weights ~22MB survive constant folding).
+    # hidden=896=14*64 (avoids collision with MAX_PROMPT_LEN=1024).
+    "moe_gptoss|--num-experts 8 --num-experts-per-tok 2 --hidden-size 896 --intermediate-size 896 --num-heads 14 --num-kv-heads 2 --head-dim 64 --num-layers 12 --weight-type fp16 --context-len 2048"
 )
 
 # --- Backend configurations ---
@@ -171,6 +176,7 @@ else
         "NPU_npuw|-d NPU -lc $CONFIGS_DIR/npuw.json"
         "NPU_hfa|-d NPU -lc $CONFIGS_DIR/hfa.json"
         "NPU_pyramid|-d NPU -lc $CONFIGS_DIR/pyramid.json"
+        "NPU_moe|-d NPU -lc $CONFIGS_DIR/moe.json"
     )
 fi
 
@@ -198,6 +204,19 @@ is_known_limitation() {
     # doesn't handle MAX_PROMPT_LEN config property, causing NPU plugin rejection.
     if [[ "$backend_name" == "NPU_hfa" ]] && [[ "$config_args" == *"--position-ids 3d"* ]]; then
         echo "qwen2_5_vl VLMPipeline + HFA attention hint causes Optimum fallback"
+        return 0
+    fi
+
+    # MoE models: only the MoE-specific NPUW config (NPU_moe) is supported.
+    # Standard NPUW/HFA/Pyramid partitioning doesn't handle MoE expert subgraphs.
+    if [[ "$backend_name" == "NPU_npuw" || "$backend_name" == "NPU_hfa" || "$backend_name" == "NPU_pyramid" ]] && [[ "$config_args" == *"--num-experts"* ]]; then
+        echo "MoE requires NPU_moe backend (NPUW_LLM_GENERATE_MOE_HINT=DEVICE_ROUTED)"
+        return 0
+    fi
+
+    # NPU_moe backend is only for MoE models
+    if [[ "$backend_name" == "NPU_moe" ]] && [[ "$config_args" != *"--num-experts"* ]]; then
+        echo "NPU_moe backend is only for MoE models"
         return 0
     fi
 
@@ -358,6 +377,19 @@ EOF
    "NPUW_DUMP_SUBS_DIR": "$dump_dir",
    "NPUW_ATTN": "PYRAMID",
    "NPUW_LLM_PREFILL_ATTENTION_HINT": "PYRAMID"
+}
+EOF
+            ;;
+        moe)
+            cat > "$tmp_config" << EOF
+{
+   "NPUW_LLM": "YES",
+   "NPUW_DEVICES": "CPU",
+   "MAX_PROMPT_LEN": 1024,
+   "NPUW_LLM_GENERATE_MOE_HINT": "HOST_ROUTED",
+   "NPUW_F16IC": "YES",
+   "NPUW_DUMP_SUBS": "MIN",
+   "NPUW_DUMP_SUBS_DIR": "$dump_dir"
 }
 EOF
             ;;
@@ -647,6 +679,16 @@ expected_sg_range() {
         return
     fi
 
+    # MoE models with HOST_ROUTED: expert + router isolation splits each layer into
+    # multiple blocks. Small synthetic models may fragment into many FCEW blocks because
+    # the router isolation breaks repeating-block symmetry. Real models (GPT-OSS 20B)
+    # produce cleaner partitioning. Accept wide range; moe_subgraphs check validates
+    # the MoE-specific part.
+    if [[ "$config_args" == *"--num-experts"* ]]; then
+        echo "4 20"
+        return
+    fi
+
     # LLM/VLM models: online partitioning produces FCEW + REP + FCEW = 3 subgraphs
     # for all backends (npuw, hfa, pyramid).
     echo "3 3"
@@ -718,6 +760,8 @@ if [[ $DUMP -eq 1 ]]; then
             DUMP_BACKENDS=("emb_decoder")
         elif [[ $IS_EMB_ENCODER -eq 1 ]]; then
             DUMP_BACKENDS=("emb_encoder")
+        elif [[ "$CONFIG_ARGS" == *"--num-experts"* ]]; then
+            DUMP_BACKENDS=("moe")
         else
             DUMP_BACKENDS=("npuw" "hfa" "pyramid")
         fi
@@ -799,6 +843,21 @@ if [[ $DUMP -eq 1 ]]; then
                             echo -e "           ${YELLOW}WARNING: anomalous subgraph count: $SG_COUNT sg ($EXPECT_STR)${NC}"
                             DUMP_WARN=$((DUMP_WARN + 1))
                             DUMP_WARNINGS+=("${CONFIG_NAME}/${dump_backend}: $SG_COUNT sg ($EXPECT_STR)")
+                        fi
+                    fi
+                    # MoE models: verify .sg JSON contains "moe_subgraphs" key
+                    if [[ "$CONFIG_ARGS" == *"--num-experts"* ]]; then
+                        MOE_SG_FOUND=0
+                        for sg_file in "$DUMP_SUBDIR"/*.sg; do
+                            if [[ -f "$sg_file" ]] && grep -q '"moe_subgraphs"' "$sg_file"; then
+                                MOE_SG_FOUND=1
+                                break
+                            fi
+                        done
+                        if [[ $MOE_SG_FOUND -eq 0 ]]; then
+                            echo -e "           ${YELLOW}WARNING: MoE model but no moe_subgraphs in .sg JSON${NC}"
+                            DUMP_WARN=$((DUMP_WARN + 1))
+                            DUMP_WARNINGS+=("${CONFIG_NAME}/${dump_backend}: missing moe_subgraphs in .sg")
                         fi
                     fi
                 else

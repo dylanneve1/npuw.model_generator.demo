@@ -1,6 +1,7 @@
 {
+   "NPUW_LLM": "YES",
    "NPUW_DEVICES": "CPU",
-   "NPUW_DUMP_SUBS": "MIN",
-   "NPUW_DUMP_SUBS_DIR": "moe_dump",
-   "NPUW_UNFOLD_IREQS": "NO"
+   "MAX_PROMPT_LEN": 1024,
+   "NPUW_LLM_GENERATE_MOE_HINT": "HOST_ROUTED",
+   "NPUW_F16IC": "YES"
 }
