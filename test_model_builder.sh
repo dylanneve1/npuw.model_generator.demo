@@ -164,6 +164,13 @@ CONFIGS=(
 
     # MoE (Mixture of Experts) — GPT-OSS-style, uses GPT-OSS tokenizer from Artifactory.
     "moe_gptoss|--num-experts 8 --num-experts-per-tok 2 --hidden-size 896 --intermediate-size 896 --num-heads 14 --num-kv-heads 2 --head-dim 64 --num-layers 12 --weight-type fp16 --context-len 2048 --vocab-size 201088"
+
+    # Sliding window attention
+    "swm_default|--sliding-window 128"
+    "swm_fp16|--sliding-window 128 --weight-type fp16"
+    "swm_int4|--sliding-window 128 --weight-type int4"
+    "swm_alternating|--sliding-window 128 --alternating"
+    "swm_alternating_fp16|--sliding-window 128 --alternating --weight-type fp16"
 )
 
 # --- Backend configurations ---

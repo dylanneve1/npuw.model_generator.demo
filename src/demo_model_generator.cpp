@@ -70,6 +70,10 @@ static void print_help(const char *prog) {
   std::cout
       << "  --no-kv-cache           Disable KV cache (stateless model)\n";
   std::cout
+      << "  --sliding-window <N>    Sliding window size, 0=disabled (default: 0)\n";
+  std::cout
+      << "  --alternating           Alternating attention: even=sliding, odd=full\n";
+  std::cout
       << "  --num-experts <N>       MoE: total experts, 0=dense (default: 0)\n";
   std::cout
       << "  --num-experts-per-tok <N> MoE: top-K active experts (default: 2)\n";
@@ -489,6 +493,13 @@ int main(int argc, char *argv[]) {
       config.use_inputs_embeds = true;
     } else if (arg == "--no-kv-cache") {
       config.use_kv_cache = false;
+    } else if (arg == "--sliding-window" && i + 1 < argc) {
+      if (!parse_size_t(argv[++i], config.sliding_window_size)) {
+        std::cerr << "Error: invalid value for --sliding-window\n";
+        return 1;
+      }
+    } else if (arg == "--alternating") {
+      config.alternating_attention = true;
     } else if (arg == "--num-experts" && i + 1 < argc) {
       if (!parse_size_t(argv[++i], config.num_experts)) {
         std::cerr << "Error: invalid value for --num-experts\n";
@@ -875,6 +886,12 @@ int main(int argc, char *argv[]) {
             << (config.use_inputs_embeds ? "yes" : "no") << "\n";
   std::cout << "  kv_cache:          " << (config.use_kv_cache ? "yes" : "no")
             << "\n";
+  if (config.sliding_window_size > 0) {
+    std::cout << "  sliding_window:    " << config.sliding_window_size;
+    if (config.alternating_attention)
+      std::cout << " (alternating)";
+    std::cout << "\n";
+  }
   if (config.num_experts > 0) {
     size_t k = config.num_experts_per_tok > 0 ? config.num_experts_per_tok : 2;
     size_t moe_inter = config.moe_intermediate_size > 0
