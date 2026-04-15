@@ -95,6 +95,33 @@ for hf_id in "${!OPTIMUM_MODELS[@]}"; do
     fi
 done
 
+# --- GPT-OSS 20B tokenizer (for MoE model testing) ---
+GPTOSS_URL="https://af01p-ir.devtools.intel.com/artifactory/ir-public-models-ir-local/experiments/gpt-oss-20B/ov254/gpt-oss-nf4-group-1_dyn_stateful"
+GPTOSS_DIR="$MODELS_DIR/moe"
+GPTOSS_FILES=(
+    openvino_tokenizer.xml openvino_tokenizer.bin
+    openvino_detokenizer.xml openvino_detokenizer.bin
+    config.json generation_config.json tokenizer_config.json tokenizer.json
+)
+printf "  %-20s " "moe (gpt-oss tok)"
+if [[ -d "$GPTOSS_DIR" ]] && [[ -f "$GPTOSS_DIR/openvino_tokenizer.xml" ]]; then
+    echo "SKIP (already exists)"
+else
+    mkdir -p "$GPTOSS_DIR"
+    gptoss_ok=1
+    for f in "${GPTOSS_FILES[@]}"; do
+        if ! curl -sk -o "$GPTOSS_DIR/$f" "$GPTOSS_URL/$f"; then
+            gptoss_ok=0; break
+        fi
+    done
+    if [[ $gptoss_ok -eq 1 ]] && [[ -s "$GPTOSS_DIR/openvino_tokenizer.xml" ]]; then
+        echo "OK ($(du -sh "$GPTOSS_DIR" | cut -f1))"
+    else
+        echo "FAILED"
+        FAIL=1
+    fi
+fi
+
 # --- Generate test audio (1s silence, 16kHz mono WAV for whisper tests) ---
 printf "  %-20s " "test_audio.wav"
 python3 -c "

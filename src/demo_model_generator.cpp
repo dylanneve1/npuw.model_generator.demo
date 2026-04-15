@@ -105,6 +105,7 @@ static void write_config_json(const fs::path &dir, const LLMConfig &config,
                               const std::string &model_type_id) {
   bool qwen_tokens =
       (model_type_id == "qwen2_5_vl" || model_type_id == "llava");
+  bool gptoss_tokens = (model_type_id == "gpt_oss");
   {
     std::ofstream ofs(dir / "config.json");
     ofs << "{\n";
@@ -121,7 +122,10 @@ static void write_config_json(const fs::path &dir, const LLMConfig &config,
       size_t k = config.num_experts_per_tok > 0 ? config.num_experts_per_tok : 2;
       ofs << "  \"num_experts_per_tok\": " << k << ",\n";
     }
-    if (qwen_tokens) {
+    if (gptoss_tokens) {
+      ofs << "  \"eos_token_id\": 200002,\n";
+      ofs << "  \"pad_token_id\": 199999\n";
+    } else if (qwen_tokens) {
       ofs << "  \"bos_token_id\": 151643,\n";
       ofs << "  \"eos_token_id\": 151645,\n";
       ofs << "  \"pad_token_id\": 151643\n";
@@ -135,7 +139,10 @@ static void write_config_json(const fs::path &dir, const LLMConfig &config,
   {
     std::ofstream ofs(dir / "generation_config.json");
     ofs << "{\n";
-    if (qwen_tokens) {
+    if (gptoss_tokens) {
+      ofs << "  \"eos_token_id\": 200002,\n";
+      ofs << "  \"pad_token_id\": 199999,\n";
+    } else if (qwen_tokens) {
       ofs << "  \"bos_token_id\": 151643,\n";
       ofs << "  \"eos_token_id\": [151645, 151643],\n";
       ofs << "  \"pad_token_id\": 151643,\n";
@@ -921,7 +928,9 @@ int main(int argc, char *argv[]) {
   }
 
   std::string model_type_id = "llama";
-  if (config.use_inputs_embeds) {
+  if (config.num_experts > 0) {
+    model_type_id = "gpt_oss";
+  } else if (config.use_inputs_embeds) {
     model_type_id = (position_ids_str == "3d") ? "qwen2_5_vl" : "llava";
   }
   write_config_json(dest, config, context_len, model_type_id);

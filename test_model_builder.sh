@@ -33,6 +33,7 @@ QWEN_TOKENIZER_DIR="$SCRIPT_DIR/models/vlm"
 QWEN3_EMB_TOKENIZER_DIR="$SCRIPT_DIR/models/embedding-decoder"
 CONTRIEVER_TOKENIZER_DIR="$SCRIPT_DIR/models/embedding-encoder"
 WHISPER_TOKENIZER_DIR="$SCRIPT_DIR/models/whisper"
+MOE_TOKENIZER_DIR="$SCRIPT_DIR/models/moe"
 TEST_AUDIO="$SCRIPT_DIR/models/test_audio.wav"
 CONFIGS_DIR="$SCRIPT_DIR/configs"
 OUTPUT_DIR="/tmp/npuw_model_builder_test"
@@ -161,10 +162,8 @@ CONFIGS=(
     "emb_encoder_int8|--type embedding --arch encoder --weight-type int8 --vocab-size 30522"
     "emb_encoder_fp16|--type embedding --arch encoder --weight-type fp16 --vocab-size 30522"
 
-    # MoE (Mixture of Experts) — GPT-OSS-style with dimensions large enough for
-    # proper NPUW partitioning (expert weights ~22MB survive constant folding).
-    # hidden=896=14*64 (avoids collision with MAX_PROMPT_LEN=1024).
-    "moe_gptoss|--num-experts 8 --num-experts-per-tok 2 --hidden-size 896 --intermediate-size 896 --num-heads 14 --num-kv-heads 2 --head-dim 64 --num-layers 12 --weight-type fp16 --context-len 2048"
+    # MoE (Mixture of Experts) — GPT-OSS-style, uses GPT-OSS tokenizer from Artifactory.
+    "moe_gptoss|--num-experts 8 --num-experts-per-tok 2 --hidden-size 896 --intermediate-size 896 --num-heads 14 --num-kv-heads 2 --head-dim 64 --num-layers 12 --weight-type fp16 --context-len 2048 --vocab-size 201088"
 )
 
 # --- Backend configurations ---
@@ -479,6 +478,8 @@ for config_entry in "${CONFIGS[@]}"; do
         TOK_DIR="$QWEN3_EMB_TOKENIZER_DIR"
     elif [[ "$CONFIG_ARGS" == *"--inputs-embeds"* ]]; then
         TOK_DIR="$QWEN_TOKENIZER_DIR"
+    elif [[ "$CONFIG_ARGS" == *"--num-experts"* ]]; then
+        TOK_DIR="$MOE_TOKENIZER_DIR"
     else
         TOK_DIR="$TOKENIZER_DIR"
     fi
