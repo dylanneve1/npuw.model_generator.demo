@@ -389,6 +389,7 @@ EOF
    "NPUW_F16IC": "YES",
    "NPUW_DCOFF_TYPE": "",
    "NPUW_DCOFF_SCALE": "NO",
+   "NPUW_DQ": "NO",
    "NPUW_DUMP_SUBS": "MIN",
    "NPUW_DUMP_SUBS_DIR": "$dump_dir"
 }
