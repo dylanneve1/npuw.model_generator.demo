@@ -107,7 +107,8 @@ static void write_config_json(const fs::path &dir, const LLMConfig &config,
                               size_t context_len,
                               const std::string &model_type_id) {
   bool qwen_tokens =
-      (model_type_id == "qwen2_5_vl" || model_type_id == "llava" || model_type_id == "qwen3_5");
+      (model_type_id == "qwen2_5_vl" || model_type_id == "llava" ||
+       model_type_id == "qwen3_5" || model_type_id == "qwen3_next");
   {
     std::ofstream ofs(dir / "config.json");
     ofs << "{\n";
@@ -119,8 +120,21 @@ static void write_config_json(const fs::path &dir, const LLMConfig &config,
     ofs << "  \"intermediate_size\": " << config.intermediate_size << ",\n";
     ofs << "  \"vocab_size\": " << config.vocab_size << ",\n";
     ofs << "  \"max_position_embeddings\": " << context_len << ",\n";
-    if (config.mamba_ratio > 0)
-      ofs << "  \"hybrid_mamba_ratio\": " << config.mamba_ratio << ",\n";
+    if (config.mamba_ratio > 0) {
+      // Qwen3-Next layer_types: N linear_attention layers per 1 full_attention.
+      ofs << "  \"linear_num_key_heads\": " << config.get_linear_num_key_heads() << ",\n";
+      ofs << "  \"linear_num_value_heads\": " << config.get_linear_num_value_heads() << ",\n";
+      ofs << "  \"linear_key_head_dim\": " << config.get_linear_key_head_dim() << ",\n";
+      ofs << "  \"linear_value_head_dim\": " << config.get_linear_value_head_dim() << ",\n";
+      ofs << "  \"linear_conv_kernel_dim\": " << config.linear_conv_kernel_dim << ",\n";
+      ofs << "  \"layer_types\": [";
+      const size_t stride = config.mamba_ratio + 1;
+      for (size_t i = 0; i < config.num_layers; ++i) {
+        if (i) ofs << ", ";
+        ofs << "\"" << ((i % stride) < config.mamba_ratio ? "linear_attention" : "full_attention") << "\"";
+      }
+      ofs << "],\n";
+    }
     if (qwen_tokens) {
       ofs << "  \"bos_token_id\": 151643,\n";
       ofs << "  \"eos_token_id\": 151645,\n";
@@ -923,10 +937,10 @@ int main(int argc, char *argv[]) {
   }
 
   std::string model_type_id = "llama";
-  if (config.use_inputs_embeds) {
-    if (config.mamba_ratio > 0)
-      model_type_id = "qwen3_5";
-    else if (position_ids_str == "3d")
+  if (config.mamba_ratio > 0) {
+    model_type_id = "qwen3_next";
+  } else if (config.use_inputs_embeds) {
+    if (position_ids_str == "3d")
       model_type_id = "qwen2_5_vl";
     else
       model_type_id = "llava";
