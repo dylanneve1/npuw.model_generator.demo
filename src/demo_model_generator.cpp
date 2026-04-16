@@ -67,7 +67,11 @@ static void print_help(const char *prog) {
   std::cout << "  --position-ids <type>   Position IDs shape: 2d, 3d, none "
                "(default: 2d)\n";
   std::cout
-      << "  --no-kv-cache           Disable KV cache (stateless model)\n\n";
+      << "  --no-kv-cache           Disable KV cache (stateless model)\n";
+  std::cout
+      << "  --sliding-window <N>    Sliding window size, 0=disabled (default: 0)\n";
+  std::cout
+      << "  --alternating-attention Even=sliding, odd=full (Gemma 2 style)\n\n";
   std::cout << "Whisper options (defaults match whisper-tiny):\n";
   std::cout << "  --d-model <N>           Model dimension (default: 384)\n";
   std::cout << "  --encoder-layers <N>    Encoder layers (default: 4)\n";
@@ -468,6 +472,13 @@ int main(int argc, char *argv[]) {
       config.use_inputs_embeds = true;
     } else if (arg == "--no-kv-cache") {
       config.use_kv_cache = false;
+    } else if (arg == "--sliding-window" && i + 1 < argc) {
+      if (!parse_size_t(argv[++i], config.sliding_window_size)) {
+        std::cerr << "Error: invalid value for --sliding-window\n";
+        return 1;
+      }
+    } else if (arg == "--alternating-attention") {
+      config.alternating_attention = true;
     } else if (arg == "--d-model" && i + 1 < argc) {
       if (!parse_size_t(argv[++i], whisper_enc.hidden_size)) {
         std::cerr << "Error: invalid value for --d-model\n";
@@ -555,10 +566,7 @@ int main(int argc, char *argv[]) {
              whisper_enc.precision, whisper_enc.weight, bias_wf);
 
     auto encoder = mb.build_whisper_encoder(whisper_enc);
-    ov::pass::Serialize enc_serializer(
-        (dest / "openvino_encoder_model.xml").string(),
-        (dest / "openvino_encoder_model.bin").string());
-    enc_serializer.run_on_model(encoder);
+    ov::save_model(encoder, (dest / "openvino_encoder_model.xml").string());
     std::cout << "Encoder model saved.\n";
 
     WhisperDecoderConfig dec_cfg;
@@ -579,10 +587,7 @@ int main(int argc, char *argv[]) {
              whisper_enc.precision, whisper_enc.weight, bias_wf);
 
     auto decoder = mb.build_whisper_decoder(dec_cfg);
-    ov::pass::Serialize dec_serializer(
-        (dest / "openvino_decoder_model.xml").string(),
-        (dest / "openvino_decoder_model.bin").string());
-    dec_serializer.run_on_model(decoder);
+    ov::save_model(decoder, (dest / "openvino_decoder_model.xml").string());
     std::cout << "Decoder model saved.\n";
 
     write_whisper_configs(dest, whisper_enc, dec_cfg);
@@ -651,9 +656,7 @@ int main(int argc, char *argv[]) {
       ModelBuilder mb;
       auto model = mb.build_embedding_encoder(bert_cfg);
 
-      ov::pass::Serialize serializer((dest / "openvino_model.xml").string(),
-                                     (dest / "openvino_model.bin").string());
-      serializer.run_on_model(model);
+      ov::save_model(model, (dest / "openvino_model.xml").string());
 
       write_encoder_config_json(dest, bert_cfg);
     } else {
@@ -712,9 +715,7 @@ int main(int argc, char *argv[]) {
       ModelBuilder mb;
       auto model = mb.build_llm(config);
 
-      ov::pass::Serialize serializer((dest / "openvino_model.xml").string(),
-                                     (dest / "openvino_model.bin").string());
-      serializer.run_on_model(model);
+      ov::save_model(model, (dest / "openvino_model.xml").string());
 
       write_embedding_config_json(dest, config, context_len);
     }
@@ -813,6 +814,10 @@ int main(int argc, char *argv[]) {
             << (config.use_inputs_embeds ? "yes" : "no") << "\n";
   std::cout << "  kv_cache:          " << (config.use_kv_cache ? "yes" : "no")
             << "\n";
+  if (config.sliding_window_size > 0) {
+    std::cout << "  sliding_window:    " << config.sliding_window_size << "\n";
+    std::cout << "  alternating_attn:  " << (config.alternating_attention ? "yes" : "no") << "\n";
+  }
   if (!tokenizer_dir.empty())
     std::cout << "  tokenizer_src:     " << tokenizer_dir << "\n";
   std::cout << "\n";
@@ -821,10 +826,7 @@ int main(int argc, char *argv[]) {
   auto model = mb.build_llm(config);
 
   if (config.use_inputs_embeds) {
-    ov::pass::Serialize lang_serializer(
-        (dest / "openvino_language_model.xml").string(),
-        (dest / "openvino_language_model.bin").string());
-    lang_serializer.run_on_model(model);
+    ov::save_model(model, (dest / "openvino_language_model.xml").string());
 
     auto emb_input = std::make_shared<ov::op::v0::Parameter>(
         ov::element::i64, ov::PartialShape{-1, -1});
@@ -842,18 +844,13 @@ int main(int argc, char *argv[]) {
                                                  ov::ParameterVector{emb_input},
                                                  "text_embeddings_model");
 
-    ov::pass::Serialize emb_serializer(
-        (dest / "openvino_text_embeddings_model.xml").string(),
-        (dest / "openvino_text_embeddings_model.bin").string());
-    emb_serializer.run_on_model(emb_model);
+    ov::save_model(emb_model, (dest / "openvino_text_embeddings_model.xml").string());
 
     if (!tokenizer_dir.empty()) {
       symlink_vlm_assets(tokenizer_dir, dest);
     }
   } else {
-    ov::pass::Serialize serializer((dest / "openvino_model.xml").string(),
-                                   (dest / "openvino_model.bin").string());
-    serializer.run_on_model(model);
+    ov::save_model(model, (dest / "openvino_model.xml").string());
   }
 
   std::string model_type_id = "llama";

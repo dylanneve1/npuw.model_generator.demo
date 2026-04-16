@@ -43,6 +43,7 @@ add_executable(npuw_model_generator_demo
 
 target_include_directories(npuw_model_generator_demo PRIVATE
     ${MODEL_BUILDER_DIR}
+    ${OPENVINO_SOURCE_DIR}/src/core/dev_api
 )
 
 target_link_libraries(npuw_model_generator_demo PRIVATE
