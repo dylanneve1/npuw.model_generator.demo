@@ -67,7 +67,9 @@ static void print_help(const char *prog) {
   std::cout << "  --position-ids <type>   Position IDs shape: 2d, 3d, none "
                "(default: 2d)\n";
   std::cout
-      << "  --no-kv-cache           Disable KV cache (stateless model)\n\n";
+      << "  --no-kv-cache           Disable KV cache (stateless model)\n";
+  std::cout << "  --lora-rank <N>         Inject LoRA adapters with rank N "
+               "(default: 0 = off)\n\n";
   std::cout << "Whisper options (defaults match whisper-tiny):\n";
   std::cout << "  --d-model <N>           Model dimension (default: 384)\n";
   std::cout << "  --encoder-layers <N>    Encoder layers (default: 4)\n";
@@ -226,8 +228,8 @@ static void symlink_vlm_assets(const fs::path &src_dir,
 }
 
 static void write_whisper_configs(const fs::path &dir,
-                                  const WhisperEncoderConfig &enc,
-                                  const WhisperDecoderConfig &dec) {
+                                  const WhisperConfig &enc,
+                                  const WhisperConfig &dec) {
   {
     std::ofstream ofs(dir / "config.json");
     ofs << "{\n";
@@ -289,6 +291,87 @@ static void write_whisper_configs(const fs::path &dir,
   }
 }
 
+/// Write a minimal safetensors file with LoRA A/B/alpha tensors for each adapted layer.
+/// Format: 8-byte LE header_size | JSON header | raw tensor data (all f32).
+static void write_lora_safetensors(const fs::path &path, const LLMConfig &config) {
+    const size_t R = config.lora_rank;
+    const size_t hs = config.hidden_size;
+    const size_t is = config.intermediate_size;
+    const size_t kv_dim = config.get_kv_heads() * config.head_dim;
+
+    // Default adapted projections
+    std::vector<std::string> targets = {"q_proj", "k_proj", "v_proj", "o_proj",
+                                        "gate_proj", "up_proj", "down_proj"};
+
+    struct TensorEntry {
+        std::string name;
+        std::vector<size_t> shape;
+        size_t byte_offset;
+        size_t byte_size;
+    };
+
+    std::vector<TensorEntry> entries;
+    size_t data_offset = 0;
+
+    auto add_tensor = [&](const std::string& name, size_t dim0, size_t dim1) {
+        size_t nbytes = dim0 * dim1 * sizeof(float);
+        entries.push_back({name, {dim0, dim1}, data_offset, nbytes});
+        data_offset += nbytes;
+    };
+
+    for (size_t layer = 0; layer < config.num_layers; ++layer) {
+        std::string pfx = "base_model.model.model.layers." + std::to_string(layer);
+        for (const auto& proj : targets) {
+            size_t in_feat = hs;
+            size_t out_feat = hs;
+            if (proj == "k_proj" || proj == "v_proj") out_feat = kv_dim;
+            if (proj == "gate_proj" || proj == "up_proj") out_feat = is;
+            if (proj == "down_proj") { in_feat = is; out_feat = hs; }
+
+            std::string base = pfx + ".self_attn." + proj;
+            if (proj == "gate_proj" || proj == "up_proj" || proj == "down_proj")
+                base = pfx + ".mlp." + proj;
+
+            add_tensor(base + ".lora_A.weight", R, in_feat);
+            add_tensor(base + ".lora_B.weight", out_feat, R);
+            // alpha stored as [1] scalar
+            entries.push_back({base + ".alpha", {1}, data_offset, sizeof(float)});
+            data_offset += sizeof(float);
+        }
+    }
+
+    // Build JSON header
+    std::string hdr = "{";
+    for (size_t i = 0; i < entries.size(); ++i) {
+        if (i) hdr += ",";
+        auto& e = entries[i];
+        hdr += "\"" + e.name + "\":{\"dtype\":\"F32\",\"shape\":[";
+        for (size_t j = 0; j < e.shape.size(); ++j) {
+            if (j) hdr += ",";
+            hdr += std::to_string(e.shape[j]);
+        }
+        hdr += "],\"data_offsets\":[" + std::to_string(e.byte_offset) + ","
+             + std::to_string(e.byte_offset + e.byte_size) + "]}";
+    }
+    hdr += "}";
+
+    uint64_t hdr_size = hdr.size();
+    std::ofstream out(path, std::ios::binary);
+    out.write(reinterpret_cast<const char*>(&hdr_size), 8);
+    out.write(hdr.data(), hdr_size);
+
+    // Write tensor data (small random values)
+    uint32_t state = 42;
+    for (size_t i = 0; i < data_offset / sizeof(float); ++i) {
+        uint32_t r = state ^= state << 13; state ^= state >> 17; state ^= state << 5;
+        float val = (static_cast<float>(r % 10000u) / 10000.0f - 0.5f) * 0.01f;
+        out.write(reinterpret_cast<const char*>(&val), sizeof(float));
+    }
+    // Handle trailing bytes for alpha scalars (already counted)
+    std::cout << "  LoRA: " << entries.size() << " tensors, "
+              << (8 + hdr_size + data_offset) / 1024 << " KB\n";
+}
+
 static DCOffPattern parse_quant_pattern(const std::string &s) {
   if (s == "symm_no_zp_f32")
     return DCOffPattern::SYMM_NO_ZP_F32;
@@ -327,7 +410,7 @@ int main(int argc, char *argv[]) {
   config.use_kv_cache = true;
   config.precision = ov::element::f32;
 
-  WhisperEncoderConfig whisper_enc;
+  WhisperConfig whisper_enc;
   whisper_enc.hidden_size = 384;
   whisper_enc.num_heads = 6;
   whisper_enc.head_dim = 64;
@@ -468,6 +551,11 @@ int main(int argc, char *argv[]) {
       config.use_inputs_embeds = true;
     } else if (arg == "--no-kv-cache") {
       config.use_kv_cache = false;
+    } else if (arg == "--lora-rank" && i + 1 < argc) {
+      if (!parse_size_t(argv[++i], config.lora_rank)) {
+        std::cerr << "Error: invalid value for --lora-rank\n";
+        return 1;
+      }
     } else if (arg == "--d-model" && i + 1 < argc) {
       if (!parse_size_t(argv[++i], whisper_enc.hidden_size)) {
         std::cerr << "Error: invalid value for --d-model\n";
@@ -561,7 +649,7 @@ int main(int argc, char *argv[]) {
     enc_serializer.run_on_model(encoder);
     std::cout << "Encoder model saved.\n";
 
-    WhisperDecoderConfig dec_cfg;
+    WhisperConfig dec_cfg;
     dec_cfg.hidden_size = whisper_enc.hidden_size;
     dec_cfg.num_heads = whisper_enc.num_heads;
     dec_cfg.head_dim = whisper_enc.head_dim;
@@ -864,6 +952,13 @@ int main(int argc, char *argv[]) {
 
   if (!tokenizer_dir.empty()) {
     copy_tokenizer_files(tokenizer_dir, dest);
+  }
+
+  // Generate LoRA safetensors adapter file if lora_rank > 0
+  if (config.lora_rank > 0) {
+    auto lora_path = dest / "adapter.safetensors";
+    write_lora_safetensors(lora_path, config);
+    std::cout << "LoRA adapter saved to: " << lora_path.string() << "\n";
   }
 
   std::cout << "Model saved to: " << dest.string() << "/\n";
